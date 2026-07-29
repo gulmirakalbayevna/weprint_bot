@@ -70,10 +70,12 @@ def generate_labels_pdf(items: list, output_path: str, cols: int = 3, rows: int 
         {
             "order_code": "WP-00012",
             "receiver_phone": "+998901234567",
-            "format_key": "a5_bw",       # config.FORMAT_NAMES kalitlaridan biri
-            "binding": "prujina",        # config.BINDING_NAMES kalitlaridan biri
-            "delivery_type": "yandex",   # config.DELIVERY_TYPE_NAMES kalitlaridan biri
-            "university": "UWED",        # ixtiyoriy - faqat delivery_type='universitet' bo'lsa
+            "format_key": "a5_bw",         # config.FORMAT_NAMES kalitlaridan biri
+            "binding": "prujina",          # config.BINDING_NAMES kalitlaridan biri
+            "delivery_type": "yandex",     # config.DELIVERY_TYPE_NAMES kalitlaridan biri
+            "university": "UWED",          # ixtiyoriy - faqat delivery_type='universitet' bo'lsa
+            "delivery_detail": "Chilonzor...",  # ixtiyoriy - faqat delivery_type='viloyat_pochta' bo'lsa,
+                                                 # nakleykaga manzil ham chiqadi (kerak bo'lsa avtomatik kichrayadi)
         }
     output_path: PDF qayerga saqlanishi.
     cols, rows: bitta A4 varaqqa nechta ustun/qator yorliq. Standart 3x4=12 ta.
@@ -82,6 +84,7 @@ def generate_labels_pdf(items: list, output_path: str, cols: int = 3, rows: int 
     from reportlab.pdfgen import canvas
     from reportlab.lib.units import mm
     from reportlab.lib.colors import Color
+    from reportlab.lib.utils import simpleSplit
 
     page_width, page_height = A4
 
@@ -96,7 +99,7 @@ def generate_labels_pdf(items: list, output_path: str, cols: int = 3, rows: int 
 
     c = canvas.Canvas(output_path, pagesize=A4)
 
-    contact_text = f"Xatolik bo'lsa: @{config.BOT_USERNAME}"
+    contact_text = f"Xatolik bo'lsa: @{config.SUPPORT_USERNAME}"
 
     col_primary = Color(*COLOR_PRIMARY)
     col_accent = Color(*COLOR_ACCENT)
@@ -152,7 +155,7 @@ def generate_labels_pdf(items: list, output_path: str, cols: int = 3, rows: int 
         binding_key = item.get("binding")
         binding_text = config.BINDING_NAMES.get(binding_key, binding_key or "").upper()
 
-        lines = [
+        base_lines = [
             (item.get("order_code") or "", "Helvetica-Bold", 15.5, col_primary),
             (item.get("receiver_phone") or "", "Helvetica", 10, col_gray),
             (_format_label(item.get("format_key")), "Helvetica-Bold", 10.5, col_accent),
@@ -166,14 +169,65 @@ def generate_labels_pdf(items: list, output_path: str, cols: int = 3, rows: int 
         top_y = card_y + card_h - band_h - top_pad
         bottom_y = card_y + bottom_reserved
         available_h = top_y - bottom_y
-        gap = available_h / len(lines)
+        text_max_w = card_w - 6 * mm  # matn uchun ichki chap-o'ng bo'shliq
 
-        cur_y = top_y
-        for text, font, size, color in lines:
-            c.setFillColor(color)
-            c.setFont(font, size)
-            c.drawCentredString(center_x, cur_y, text)
-            cur_y -= gap
+        # Faqat "Oddiy pochta" bilan yetkaziladigan buyurtmalarda manzil ham
+        # nakleykaga chiqadi (BTS/Yandex/Universitet/Olib ketishda kerak emas).
+        address_text = None
+        if item.get("delivery_type") == "viloyat_pochta" and item.get("delivery_detail"):
+            address_text = f"Manzil: {item['delivery_detail']}"
+
+        if not address_text:
+            # Oldingi (manzilsiz) xatti-harakat - o'zgarishsiz.
+            gap = available_h / len(base_lines)
+            cur_y = top_y
+            for text, font, size, color in base_lines:
+                c.setFillColor(color)
+                c.setFont(font, size)
+                c.drawCentredString(center_x, cur_y, text)
+                cur_y -= gap
+        else:
+            # MANZIL BOR: avval "odatiy" o'lchamlarda qancha joy kerakligini
+            # hisoblaymiz; agar kartaga sig'masa, SHU NAKLEYKA uchun barcha
+            # shriftlar (va qatorlar orasi) bir xil nisbatda KICHRAYTIRILADI -
+            # boshqa nakleykalarga bu ta'sir qilmaydi.
+            base_gap_mm = 6.0 * mm
+            address_font_size = 8.0
+            address_line_gap = 3.6 * mm
+            gap_before_address = 1.5 * mm
+
+            addr_lines = simpleSplit(address_text, "Helvetica", address_font_size, text_max_w)
+            needed_h = (
+                len(base_lines) * base_gap_mm
+                + gap_before_address
+                + len(addr_lines) * address_line_gap
+            )
+
+            scale = min(1.0, available_h / needed_h) if needed_h > 0 else 1.0
+            scale = max(scale, 0.55)  # o'qib bo'lmas darajada kichrayib ketmasligi uchun pastki chegara
+
+            scaled_gap = base_gap_mm * scale
+            scaled_addr_font = address_font_size * scale
+            scaled_addr_gap = address_line_gap * scale
+            scaled_gap_before = gap_before_address * scale
+
+            # Kichraygan shrift bilan manzilni QAYTA bo'lib chiqamiz - kichikroq
+            # shriftda odatda kamroq qatorga sig'adi, bu xavfsiz tomonga ishlaydi.
+            addr_lines = simpleSplit(address_text, "Helvetica", scaled_addr_font, text_max_w)
+
+            cur_y = top_y
+            for text, font, size, color in base_lines:
+                c.setFillColor(color)
+                c.setFont(font, size * scale)
+                c.drawCentredString(center_x, cur_y, text)
+                cur_y -= scaled_gap
+
+            cur_y -= scaled_gap_before
+            c.setFillColor(col_gray)
+            for line in addr_lines:
+                c.setFont("Helvetica", scaled_addr_font)
+                c.drawCentredString(center_x, cur_y, line)
+                cur_y -= scaled_addr_gap
 
         # 5) Xatolik uchun kontakt - kartaning eng pastida, kichik
         c.setFillColor(col_gray)

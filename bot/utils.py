@@ -380,8 +380,6 @@ def build_statistika_workbook(stats: dict, period_label: str, date_from_label: s
     write_section("UMUMIY KO'RSATKICHLAR")
     write_row("Jami buyurtmalar", stats["order_count"])
     write_row("Jami kitoblar", stats["book_count"])
-    write_row("Jami tushum", stats["total_sum"], is_money=True)
-    write_row("O'rtacha buyurtma summasi", stats["avg_order"], is_money=True)
     write_empty_row()
 
     write_section("FORMAT BO'YICHA (kitoblar soni)")

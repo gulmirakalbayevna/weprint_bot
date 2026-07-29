@@ -54,8 +54,27 @@ async def got_phone(message: Message, state: FSMContext):
 
 # ================= ASOSIY MENYU =================
 
+async def _block_if_mid_order(message: Message, state: FSMContext) -> bool:
+    """
+    True qaytarsa - foydalanuvchi hozir buyurtma jarayonining biror bosqichida
+    (fayl yuborish, sahifa/format/chek kutish va h.k.), shuning uchun asosiy
+    menyu tugmalari (Buyurtmalarim, Narxni hisoblash, Ma'lumotlar, qayta
+    Buyurtma berish) VAQTINCHA band qilinadi - avval joriy ishni tugatishi
+    yoki "❌ Bekor qilish" bosishi kerak.
+    """
+    current = await state.get_state()
+    if current not in (None, UserFlow.main_menu.state):
+        await message.answer(
+            "⚠️ Iltimos, avval joriy ishni tugating yoki pastdagi \"❌ Bekor qilish\" tugmasini bosing."
+        )
+        return True
+    return False
+
+
 @router.message(F.text == "📦 Buyurtmalarim")
-async def my_orders(message: Message):
+async def my_orders(message: Message, state: FSMContext):
+    if await _block_if_mid_order(message, state):
+        return
     orders = db.get_orders_for_user(message.from_user.id)
     if not orders:
         await message.answer("📭 Sizda hali buyurtmalar yo'q.")
@@ -109,12 +128,16 @@ async def cancel_specific_order(callback: CallbackQuery):
 
 
 @router.message(F.text == "💰 Narxni hisoblash")
-async def price_calc(message: Message):
+async def price_calc(message: Message, state: FSMContext):
+    if await _block_if_mid_order(message, state):
+        return
     await message.answer("Narxni saytimiz orqali hisoblashingiz mumkin 👇", reply_markup=kb.kb_price_calc())
 
 
 @router.message(F.text == "ℹ️ Ma'lumotlar")
-async def info(message: Message):
+async def info(message: Message, state: FSMContext):
+    if await _block_if_mid_order(message, state):
+        return
     await message.answer(config.TXT_INFO, reply_markup=kb.kb_faq())
 
 
@@ -134,6 +157,8 @@ async def faq_answer(callback: CallbackQuery):
 
 @router.message(F.text == "📚 Buyurtma berish")
 async def start_order(message: Message, state: FSMContext):
+    if await _block_if_mid_order(message, state):
+        return
     existing = db.get_active_order_for_user(message.from_user.id)
     if existing:
         books = db.get_books_for_order(existing["id"])
@@ -394,9 +419,6 @@ async def choose_delivery(callback: CallbackQuery, state: FSMContext):
 
     elif dtype == "univer":
         db.update_order(order_id, delivery_detail=None)
-        await callback.message.answer(
-            "🎓 Universitetlarga TEKIN dostavka sentyabr oyidan boshlab ishlaydi."
-        )
         await callback.message.answer("🎓 Universitetingizni tanlang:", reply_markup=kb.kb_universitet(order_id))
 
 

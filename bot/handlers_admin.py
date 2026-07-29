@@ -199,6 +199,8 @@ async def _send_statistika_report(bot: Bot, chat_id: int, date_from, date_to, pe
         f"📊 Statistika — {period_label} ({date_from.strftime('%d.%m')} — {date_to.strftime('%d.%m')})\n",
         f"📦 Jami buyurtmalar: {stats['order_count']}",
         f"📚 Jami kitoblar: {stats['book_count']}",
+        f"💰 Jami tushum: {format_money(stats['total_sum'])}",
+        f"📈 O'rtacha buyurtma: {format_money(stats['avg_order'])}",
     ]
     await bot.send_message(chat_id, "\n".join(text_lines))
 
@@ -1108,6 +1110,7 @@ async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: B
                     "binding": b["binding"],
                     "delivery_type": order["delivery_type"],
                     "university": order["university"],
+                    "delivery_detail": order["delivery_detail"],
                 })
 
         os.makedirs("labels_tmp", exist_ok=True)
