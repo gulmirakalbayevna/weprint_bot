@@ -1,0 +1,30 @@
+# Environment
+.env
+bot/.env
+
+# Virtual environments
+venv/
+bot/venv/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Logs
+*.log
+bot/bot.log
+
+# Temporary files
+labels_tmp/
+bot/labels_tmp/
+
+# PDFs
+*.pdf
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/
