@@ -96,7 +96,7 @@ def generate_labels_pdf(items: list, output_path: str, cols: int = 3, rows: int 
 
     c = canvas.Canvas(output_path, pagesize=A4)
 
-    contact_text = f"Xatolik bo'lsa: @{config.SUPPORT_USERNAME}"
+    contact_text = f"Xatolik bo'lsa: @{config.BOT_USERNAME}"
 
     col_primary = Color(*COLOR_PRIMARY)
     col_accent = Color(*COLOR_ACCENT)
