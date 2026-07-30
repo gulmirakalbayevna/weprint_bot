@@ -99,7 +99,6 @@ def kb_delivery(order_id: int):
     b.button(text="🚕 Yandex", callback_data=f"deliv:yandex:{order_id}")
     b.button(text="📦 Viloyat", callback_data=f"deliv:viloyat:{order_id}")
     b.button(text="🎓 Universitet", callback_data=f"deliv:univer:{order_id}")
-    b.button(text="🔙 Orqaga", callback_data=f"delback:addmore:{order_id}")
     b.adjust(1)
     return b.as_markup()
 
