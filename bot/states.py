@@ -11,6 +11,7 @@ class UserFlow(StatesGroup):
     waiting_receiver_name = State()   # qabul qiluvchi telefon+ISMINI kiritish (yangi qo'shilgan)
     waiting_receipt = State()
     waiting_receipt_pochta = State()  # oddiy pochta narxi uchun IKKINCHI chekni kutish
+    awaiting_payment_review = State()  # chek yuborildi, admin ko'rib chiqishini kutmoqda - bu ham "band" holat
     waiting_yandex_link = State()     # buyurtma TAYYOR bo'lgach, taksi havolasini kutish
 
 

@@ -60,9 +60,16 @@ async def _block_if_mid_order(message: Message, state: FSMContext) -> bool:
     (fayl yuborish, sahifa/format/chek kutish va h.k.), shuning uchun asosiy
     menyu tugmalari (Buyurtmalarim, Narxni hisoblash, Ma'lumotlar, qayta
     Buyurtma berish) VAQTINCHA band qilinadi - avval joriy ishni tugatishi
-    yoki "❌ Bekor qilish" bosishi kerak.
+    kerak. Mijoz to'lovni yuborib, admin javobini kutayotgan bo'lsa (ortga
+    qaytish/bekor qilish imkoniyati YO'Q), buni alohida xabar bilan tushuntiramiz.
     """
     current = await state.get_state()
+    if current == UserFlow.awaiting_payment_review.state:
+        await message.answer(
+            "❗ Buyurtma ma'lumotlarini to'liq yakunlamasangiz, buyurtmangizni qabul qila olmaymiz.\n\n"
+            "Iltimos, to'lovingiz admin tomonidan tekshirilishini kuting."
+        )
+        return True
     if current not in (None, UserFlow.main_menu.state):
         await message.answer(
             "⚠️ Iltimos, avval joriy ishni tugating yoki pastdagi \"❌ Bekor qilish\" tugmasini bosing."
@@ -556,9 +563,9 @@ async def ask_pochta_payment(message: Message, state: FSMContext, order_id: int)
 
     caption = f"💳 Pochta narxi uchun to'lov qiling va chek yuboring.\n\n📌 Buyurtma: {order['order_code']}"
     if _qr_exists():
-        await message.answer_photo(photo=FSInputFile(config.QR_CODE_IMAGE), caption=caption)
+        await message.answer_photo(photo=FSInputFile(config.QR_CODE_IMAGE), caption=caption, reply_markup=kb.remove_kb())
     else:
-        await message.answer("⚠️ To'lov QR kodi hali sozlanmagan (admin qo'shishi kerak).\n\n" + caption)
+        await message.answer("⚠️ To'lov QR kodi hali sozlanmagan (admin qo'shishi kerak).\n\n" + caption, reply_markup=kb.remove_kb())
 
     await state.update_data(order_id=order_id)
     await state.set_state(UserFlow.waiting_receipt_pochta)
@@ -581,7 +588,7 @@ async def got_pochta_receipt(message: Message, state: FSMContext, bot: Bot):
     order = db.get_order(order_id)
 
     await message.answer("✅ Pochta to'lovi cheki qabul qilindi, admin tekshirmoqda. Tez orada javob beramiz!",
-                          reply_markup=kb.kb_main_menu())
+                          reply_markup=kb.remove_kb())
 
     # Xuddi oddiy chek kabi - umumiy admin navbatiga qo'shiladi.
     db.create_admin_task("receipt_pochta", order_id)
@@ -590,7 +597,9 @@ async def got_pochta_receipt(message: Message, state: FSMContext, bot: Bot):
 
     asyncio.create_task(schedule_admin_reminder(bot, order_id, order["order_code"]))
 
-    await state.clear()
+    # MUHIM: bu yerda ham state.clear() qilinmaydi - sabab yuqoridagi
+    # got_receipt funksiyasidagi izohda tushuntirilgan.
+    await state.set_state(UserFlow.awaiting_payment_review)
 
 
 @router.message(UserFlow.waiting_yandex_link)
@@ -677,10 +686,14 @@ async def show_payment_qr(message: Message, state: FSMContext, order_id: int):
     )
 
     caption = f"💳 To'lov qilib, chek (PDF yoki JPG rasm) yuboring.\n\n📌 So'rov: #{order_id}"
+    # MUHIM: reply_markup=kb.remove_kb() - oldingi bosqichlarda qolib ketgan
+    # "🔙 Orqaga" tugmasini shu yerda OLIB TASHLAYMIZ. To'lov so'ralgach,
+    # mijoz endi orqaga qaytolmasligi kerak - faqat chek yuborishi yoki
+    # (yuqoridagi inline tugma orqali) butunlay bekor qilishi mumkin.
     if _qr_exists():
-        await message.answer_photo(photo=FSInputFile(config.QR_CODE_IMAGE), caption=caption)
+        await message.answer_photo(photo=FSInputFile(config.QR_CODE_IMAGE), caption=caption, reply_markup=kb.remove_kb())
     else:
-        await message.answer("⚠️ To'lov QR kodi hali sozlanmagan (admin qo'shishi kerak).\n\n" + caption)
+        await message.answer("⚠️ To'lov QR kodi hali sozlanmagan (admin qo'shishi kerak).\n\n" + caption, reply_markup=kb.remove_kb())
 
     await state.update_data(order_id=order_id)
     await state.set_state(UserFlow.waiting_receipt)
@@ -826,15 +839,15 @@ async def back_from_phone(message: Message, state: FSMContext):
 
 @router.message(UserFlow.waiting_receipt, F.text == "🔙 Orqaga")
 async def back_from_receipt(message: Message, state: FSMContext):
-    data = await state.get_data()
-    order_id = data.get("order_id")
-    if not order_id:
-        return
-    # Chek endi yetkazishdan OLDIN so'ralgani uchun, orqaga bosilsa
-    # "Yana kitob qo'shasizmi?" ekraniga qaytamiz.
-    await message.answer("⬆️ Qaytadan tanlang 👇", reply_markup=kb.kb_cancel_persistent())
-    await message.answer("Yana kitob qo'shasizmi?", reply_markup=kb.kb_add_more(order_id))
-    await state.set_state(UserFlow.sending_books)
+    # MUHIM: to'lov so'ralgandan keyin ORQAGA QAYTISH ENDI TAQIQLANGAN -
+    # mijoz kitob tarkibini o'zgartirib, chalkashlik keltirib chiqarmasligi
+    # uchun. Endi faqat: chek yuborish YOKI yuqoridagi "❌ Bekor qilish"
+    # (inline) tugmasi orqali butunlay bekor qilish mumkin.
+    await message.answer(
+        "⚠️ To'lov so'ralgandan keyin orqaga qaytib bo'lmaydi.\n\n"
+        "Iltimos, chekni yuboring yoki yuqoridagi \"❌ Bekor qilish\" tugmasi orqali "
+        "buyurtmani butunlay bekor qiling."
+    )
 
 '''
 @router.message(UserFlow.waiting_receiver_phone)
@@ -920,7 +933,7 @@ async def got_receipt(message: Message, state: FSMContext, bot: Bot):
     order = db.get_order(order_id)
 
     await message.answer("✅ Chekingiz qabul qilindi, admin tekshirmoqda. Tez orada javob beramiz!",
-                          reply_markup=kb.kb_main_menu())
+                          reply_markup=kb.remove_kb())
 
     # MUHIM: chek ENDI to'g'ridan-to'g'ri yuborilmaydi - u ham kitoblar bilan
     # BIRGA, admin uchun umumiy navbatga qo'shiladi. Shunda kitob va chek
@@ -934,4 +947,19 @@ async def got_receipt(message: Message, state: FSMContext, bot: Bot):
     # Bu botni bloklamaydi - fon vazifasi sifatida ishga tushadi.
     asyncio.create_task(schedule_admin_reminder(bot, order_id, pending_label))
 
-    await state.clear()
+    # MUHIM: BU YERDA state.clear() QILINMAYDI! Aks holda mijoz holati
+    # "band emas" (None) ga qaytib, asosiy menyu tugmalarini erkin bosa
+    # oladigan bo'lib qolar edi - to'lov hali admin tomonidan ko'rib
+    # chiqilmagan bo'lsa ham. order_id ma'lumoti state.data ichida saqlanib
+    # qoladi (o'chirilmaydi), faqat holat "band" deb belgilanadi.
+    await state.set_state(UserFlow.awaiting_payment_review)
+
+
+@router.message(UserFlow.awaiting_payment_review)
+async def already_awaiting_review(message: Message):
+    """Mijoz chekni allaqachon yuborgan, admin javobini kutayotgan paytda
+    yana biror narsa (matn, fayl va h.k.) yuborsa - tinch xabar bilan
+    ma'lumot beramiz, hech narsani qayta ishlamaymiz."""
+    await message.answer(
+        "⏳ Chekingiz allaqachon yuborilgan, admin javobini kutmoqdamiz. Iltimos, biroz kuting."
+    )
