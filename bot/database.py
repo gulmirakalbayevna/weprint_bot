@@ -324,11 +324,52 @@ def get_orders_for_user(user_id, limit=10):
 def get_completed_orders_in_range(lo_date: str, hi_date: str):
     """status='completed' (hali 'ready' emas) bo'lgan, completed_at sanasi
     [lo_date, hi_date] oralig'ida bo'lgan buyurtmalar - printerchi ular uchun
-    'tayyor' deb belgilash imkoniyatiga ega bo'ladi."""
+    'tayyor' deb belgilash imkoniyatiga ega bo'ladi.
+
+    MUHIM: faqat BARCHA kitoblari "✅ Print qilindi" deb belgilangan (printed=1)
+    buyurtmalar qaytariladi. Agar buyurtmaning biror kitobi hali chop
+    etilmagan bo'lsa (printed=0), butun buyurtma bu ro'yxatga KIRMAYDI - aks
+    holda hali tayyor bo'lmagan kitob uchun ham mijozga "tayyor" xabari
+    ketib qolar edi."""
     with closing(get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM orders WHERE status='completed' AND date(completed_at) BETWEEN ? AND ? ORDER BY completed_at",
+            """
+            SELECT * FROM orders o
+            WHERE o.status='completed'
+              AND date(o.completed_at) BETWEEN ? AND ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM books b
+                  WHERE b.order_id = o.id
+                    AND b.status != 'rejected'
+                    AND (b.printed IS NULL OR b.printed = 0)
+              )
+            ORDER BY o.completed_at
+            """,
+            (lo_date, hi_date)
+        )
+        return cur.fetchall()
+
+
+def get_not_fully_printed_orders_in_range(lo_date: str, hi_date: str):
+    """get_completed_orders_in_range bilan BIR XIL oraliq/status, lekin
+    TESKARI shart - hali barcha kitoblari print qilinmagan buyurtmalar.
+    Faqat adminga "shu N ta buyurtma hali tayyor emas" deb ko'rsatish uchun."""
+    with closing(get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM orders o
+            WHERE o.status='completed'
+              AND date(o.completed_at) BETWEEN ? AND ?
+              AND EXISTS (
+                  SELECT 1 FROM books b
+                  WHERE b.order_id = o.id
+                    AND b.status != 'rejected'
+                    AND (b.printed IS NULL OR b.printed = 0)
+              )
+            ORDER BY o.completed_at
+            """,
             (lo_date, hi_date)
         )
         return cur.fetchall()

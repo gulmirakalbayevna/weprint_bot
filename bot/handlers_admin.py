@@ -968,8 +968,18 @@ async def got_ready_date_range(message: Message, state: FSMContext, bot: Bot):
         lo, hi = hi, lo
 
     orders = db.get_completed_orders_in_range(lo.isoformat(), hi.isoformat())
+    not_printed_orders = db.get_not_fully_printed_orders_in_range(lo.isoformat(), hi.isoformat())
+
     if not orders:
-        msg = await message.answer("📭 Bu oraliqda tayyor qilinadigan buyurtma topilmadi.")
+        if not_printed_orders:
+            codes = ", ".join(o["order_code"] for o in not_printed_orders)
+            msg = await message.answer(
+                f"📭 Bu oraliqda TO'LIQ print qilingan buyurtma topilmadi.\n\n"
+                f"⚠️ {len(not_printed_orders)} ta buyurtma hali barcha kitoblari "
+                f"\"✅ Print qilindi\" deb belgilanmagani uchun tayyorga kiritilmadi: {codes}"
+            )
+        else:
+            msg = await message.answer("📭 Bu oraliqda tayyor qilinadigan buyurtma topilmadi.")
         asyncio.create_task(_delayed_delete(message.chat.id, [message.message_id, msg.message_id], delay=10, bot=bot))
         await state.clear()
         return
@@ -978,6 +988,15 @@ async def got_ready_date_range(message: Message, state: FSMContext, bot: Bot):
     lines = [f"📦 {lo.strftime('%d.%m')} - {hi.strftime('%d.%m')} oralig'ida {len(order_ids)} ta buyurtma topildi:\n"]
     for o in orders:
         lines.append(f"• {o['order_code']}")
+
+    # MUHIM: agar shu oraliqda "completed" statusidagi, lekin hali BARCHA
+    # kitoblari print qilinmagan buyurtmalar bo'lsa - adminga alohida
+    # ko'rsatamiz, shunda "nega bu buyurtma ro'yxatda yo'q" degan savol
+    # tug'ilmaydi (masalan kimdir hali kitob yuborib, print qilinmagan bo'lsa).
+    if not_printed_orders:
+        lines.append(f"\n⚠️ Hali TO'LIQ print qilinmagani uchun KIRITILMADI ({len(not_printed_orders)} ta):")
+        for o in not_printed_orders:
+            lines.append(f"• {o['order_code']}")
 
     data = await state.get_data()
     cleanup_ids = data.get("cleanup_msg_ids", [])
