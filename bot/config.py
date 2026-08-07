@@ -53,10 +53,10 @@ PRICE_PER_PAGE_COLOR = 370    # 1 bet, rangli
 # 52 betgacha bo'lgan kitoblar uchun FIKS (o'zgarmas) narx:
 FLAT_PRICE_LIMIT = 52
 FLAT_PRICES = {
-    "a4_bw": 21500,
-    "a4_color": 24000,
-    "a5_bw": 18500,
-    "a5_color": 20000,
+    "a4_bw": 23500,
+    "a4_color": 26000,
+    "a5_bw": 21000,
+    "a5_color": 23000,
 }
 
 # Muqova (cover) narxi - jild ichidagi sahifa soniga qarab (52 betdan ko'p kitoblar uchun)
@@ -67,6 +67,29 @@ COVER_PRICE_TIERS = [
     (301, 400, 19500),
     (401, 440, 20500),
 ]
+
+# ============ PEREPLYOT (JILD) BAZAVIY NARXI ============
+# Har bir JILDGA (pereplyotga) qo'shiladigan bazaviy ishlov narxi - kitob
+# necha jildga bo'linsa (masalan 900 betlik kitob = 3 jild), shuncha marta
+# qo'shiladi. weprint.uz sayti narxni oshirganda AYNAN shu qism o'zgaradi -
+# 1 bet narxi (yuqorida) va COVER_PRICE_TIERS o'zgarishsiz qoladi.
+#
+# KEYINGI GAL NARX O'ZGARSA: saytdagi (yoki screenshotlardagi) yangi va eski
+# narxni solishtirib, farqni shu 4 ta raqamga QO'SHIB yozing - formulaning
+# o'zini (utils.py) o'zgartirish SHART EMAS.
+BINDING_BASE_PRICE = {
+    "a4_bw": 3500,      # eski 1500 + 2000 oshish
+    "a4_color": 3500,   # eski 1500 + 2000 oshish
+    "a5_bw": 4000,       # eski 1500 + 2500 oshish
+    "a5_color": 5000,    # eski 2000 + 3000 oshish
+}
+
+# ============ MIJOZ TANLOVIGA KO'RA MAXSUS MUQOVA DIZAYNI ============
+# DIQQAT: bu YUQORIDAGI COVER_PRICE_TIERS bilan chalkashtirmang - o'sha jild
+# ichidagi standart muqova narxi (qalin kitoblar uchun). Bu yerdagi narx esa
+# mijoz o'zi yuborgan MAXSUS muqova dizayni (fayl - PDF/JPG/Word va h.k.) uchun.
+# Faqat OLD muqova - tekin. OLD + ORQA muqova - qo'shimcha to'lov.
+CUSTOM_COVER_PRICE_FRONT_BACK = 10000
 
 FORMAT_NAMES = {
     "a4_bw": "A4, oq-qora",

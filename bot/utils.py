@@ -1,5 +1,5 @@
 import math
-from config import PRICE_PER_PAGE_BW, PRICE_PER_PAGE_COLOR, FLAT_PRICE_LIMIT, FLAT_PRICES, COVER_PRICE_TIERS
+from config import PRICE_PER_PAGE_BW, PRICE_PER_PAGE_COLOR, FLAT_PRICE_LIMIT, FLAT_PRICES, COVER_PRICE_TIERS, BINDING_BASE_PRICE
 from config import FORMAT_NAMES, BINDING_NAMES
 import database as db
 
@@ -35,16 +35,16 @@ def calc_single_copy_prices(page_count: int) -> dict:
     cover_price = _get_cover_price(per_volume_pages)
 
     price_a5_bw = _round_up_500(
-        (math.ceil(per_volume_pages / 4) * PRICE_PER_PAGE_BW + cover_price + 1500) * volumes
+        (math.ceil(per_volume_pages / 4) * PRICE_PER_PAGE_BW + cover_price + BINDING_BASE_PRICE["a5_bw"]) * volumes
     )
     price_a5_color = _round_up_500(
-        (math.ceil(per_volume_pages / 4) * PRICE_PER_PAGE_COLOR + cover_price + 2000) * volumes
+        (math.ceil(per_volume_pages / 4) * PRICE_PER_PAGE_COLOR + cover_price + BINDING_BASE_PRICE["a5_color"]) * volumes
     )
     price_a4_bw = _round_up_500(
-        (math.ceil(per_volume_pages / 2) * PRICE_PER_PAGE_BW + cover_price + 1500) * volumes
+        (math.ceil(per_volume_pages / 2) * PRICE_PER_PAGE_BW + cover_price + BINDING_BASE_PRICE["a4_bw"]) * volumes
     )
     price_a4_color = _round_up_500(
-        (math.ceil(per_volume_pages / 2) * PRICE_PER_PAGE_COLOR + cover_price + 1500) * volumes
+        (math.ceil(per_volume_pages / 2) * PRICE_PER_PAGE_COLOR + cover_price + BINDING_BASE_PRICE["a4_color"]) * volumes
     )
 
     return {
@@ -179,6 +179,10 @@ def order_summary_text(order_id: int) -> str:
         vol = get_volume_count(b["page_count"])
         vol_text = f", {vol} jild" if vol > 1 else ""
         lines.append(f"📚 Kitob №{b['seq_num']} ({b['page_count']} bet{vol_text}): {b['price']:,} so'm".replace(",", " "))
+        if b["cover_choice"] and b["cover_choice"] != "none":
+            cover_label = "old + orqa" if b["cover_choice"] == "front_back" else "faqat old"
+            cover_extra = f" (+{b['cover_price']:,} so'm)".replace(",", " ") if b["cover_price"] else " (tekin)"
+            lines.append(f"   🖼 Muqova: {cover_label}{cover_extra}")
         total += b["price"] or 0
     lines.append("────────────────")
     lines.append(f"💰 Jami: {total:,} so'm".replace(",", " "))
@@ -189,27 +193,65 @@ def format_money(v: int) -> str:
     return f"{v:,} so'm".replace(",", " ")
 
 
+async def update_order_status_header(bot, order_id: int, emoji: str, label: str):
+    """Buyurtmaning YAGONA guruhdagi HOLAT xabarini (rangli belgi bilan)
+    TAHRIRLAYDI - yangi xabar yubormaydi. Xabar topilmasa (masalan qo'lda
+    o'chirilgan bo'lsa) - jim o'tkazib yuboriladi, guruh spam bilan
+    to'lmasligi uchun."""
+    order = db.get_order(order_id)
+    if not order or not order["status_msg_chat_id"] or not order["status_msg_message_id"]:
+        return
+    try:
+        await bot.edit_message_text(
+            chat_id=order["status_msg_chat_id"],
+            message_id=order["status_msg_message_id"],
+            text=f"{emoji} {label} — {order['order_code']}"
+        )
+    except Exception:
+        pass
+
+
+async def refresh_order_print_status(bot, order_id: int):
+    """Bitta kitob 'Print qilindi' deb belgilangan HAR SAFAR chaqiriladi -
+    buyurtmadagi barcha kitoblarning print holatini tekshirib, YAGONA
+    guruhdagi status xabarini mos ravishda yangilaydi:
+        🔴 hech biri print qilinmagan
+        🟡 ba'zilari print qilingan
+        🟢 barchasi print qilingan (endi /tayyor kutilmoqda)
+    Buyurtma allaqachon "ready" bo'lsa (✅ TAYYOR), ortga qaytarilmaydi."""
+    order = db.get_order(order_id)
+    if not order or order["status"] == "ready":
+        return
+    books = db.get_books_for_order(order_id)
+    if not books:
+        return
+    printed_count = sum(1 for b in books if b["printed"])
+    if printed_count == 0:
+        await update_order_status_header(bot, order_id, "🔴", "CHOP ETILMOQDA")
+    elif printed_count < len(books):
+        await update_order_status_header(bot, order_id, "🟡", "QISMAN PRINT QILINDI")
+    else:
+        await update_order_status_header(bot, order_id, "🟢", "BARCHA KITOBLAR PRINT QILINDI")
+
+
 async def send_to_print_group(bot, order_id: int):
-    """Buyurtma to'liq tayyor bo'lgach (to'lov + yetkazish tanlangach) ikkita
-    guruhga yuboriladi:
-    1) PRINT_GROUP_ID - kitob fayli + info (Print tugmasi bilan, print xodimi
-       shu yerda "Print qilindi" bosib, ismini yozadi).
-    2) PRINTED_GROUP_ID ("Zakaz qabul guruhi") - xuddi shu fayllar, LEKIN
-       HECH QANDAY TUGMASIZ - bu shunchaki zaxira/arxiv: bot vaqtincha
-       ishlamay qolsa ham, qabul qilingan buyurtmalar shu yerda ko'rinib
-       turadi va ish to'xtab qolmaydi.
+    """Buyurtma to'liq tayyor bo'lgach (to'lov + yetkazish tanlangach)
+    YAGONA guruhga (PRINT_GROUP_ID) yuboriladi.
+
+    MUHIM: avval buyurtma uchun BITTA "holat" xabari yuboriladi
+    (🔴 CHOP ETILMOQDA), va uning chat/message ID si bazaga saqlanadi.
+    Shu orqali keyinchalik (kitoblar print qilingani sayin - 🟡/🟢, va
+    oxirida /tayyor bosilganda - ✅) AYNAN SHU xabar tahrirlanadi, yangi
+    xabar yuborilmaydi. Shu tarzda uchta alohida guruh (Print/Zakaz
+    qabul/Tayyor) o'rniga BITTA guruh ichida rangli status ko'rinadi.
     """
     import config
     import keyboards as kb
     order = db.get_order(order_id)
     books = db.get_books_for_order(order_id)
 
-    await bot.send_message(config.PRINT_GROUP_ID, f"🖨 YANGI BUYURTMA — {order['order_code']}")
-    if config.PRINTED_GROUP_ID:
-        try:
-            await bot.send_message(config.PRINTED_GROUP_ID, f"📥 QABUL QILINDI — {order['order_code']}")
-        except Exception:
-            pass
+    status_msg = await bot.send_message(config.PRINT_GROUP_ID, f"🔴 CHOP ETILMOQDA — {order['order_code']}")
+    db.update_order(order_id, status_msg_chat_id=config.PRINT_GROUP_ID, status_msg_message_id=status_msg.message_id)
 
     for b in books:
         if b["status"] != "done":
@@ -225,28 +267,45 @@ async def send_to_print_group(bot, order_id: int):
             f"{b['page_count']} bet{vol_text} | {FORMAT_NAMES[b['format_key']]} | "
             f"{BINDING_NAMES[b['binding']]} | {b['copies']} dona"
         )
+        cover_choice = b["cover_choice"] if "cover_choice" in b.keys() else None
+        if cover_choice and cover_choice != "none":
+            cover_label = "Old + orqa" if cover_choice == "front_back" else "Faqat old"
+            info_text += f"\n🖼 Maxsus muqova: {cover_label}"
         # Print xodimi uchun - shu aniq faylni chop etib bo'lgach bosadigan tugma.
         # Bu FAQAT print guruh ichidagi belgi - foydalanuvchi statusiga ta'sir
         # qilmaydi (u hamon "Ishlanmoqda" ko'radi, /tayyor buyrug'i bosilguncha).
         info_msg = await bot.send_message(
             config.PRINT_GROUP_ID, info_text,
-            reply_markup=kb.kb_book_print_toggle(b["id"], printed=bool(b["printed"]))
+            reply_markup=kb.kb_book_toggles(
+                b["id"],
+                printed=bool(b["printed"]),
+                cover_printed=bool(b["cover_printed"]) if "cover_printed" in b.keys() else False,
+                packaging_done=bool(b["packaging_done"]) if "packaging_done" in b.keys() else False,
+            )
         )
         # Bu xabarning ID sini saqlab qo'yamiz - print xodimi ismini yozgach,
         # aynan shu xabarni TAHRIRLAB, ismini ichiga qo'shish uchun kerak bo'ladi.
         db.update_book(b["id"], print_info_chat_id=config.PRINT_GROUP_ID, print_info_message_id=info_msg.message_id)
 
-        # PRINTED_GROUP_ID ("Zakaz qabul guruhi") - AYNAN SHU FAYL, lekin
-        # HECH QANDAY tugmasiz - sof zaxira nusxa sifatida.
-        if config.PRINTED_GROUP_ID:
+        # Agar mijoz maxsus muqova fayli yuborgan bo'lsa - kitob fayli bilan
+        # BIRGA, shu yerda alohida jo'natamiz (istalgan format: pdf/jpg/docx va h.k.).
+        if b["cover_file_id"]:
+            cover_label = "Old + orqa" if cover_choice == "front_back" else "Faqat old"
             try:
                 await bot.send_document(
-                    config.PRINTED_GROUP_ID, b["file_id"],
-                    caption=f"{order['order_code']}-{b['seq_num']} — {b['file_name']}"
+                    config.PRINT_GROUP_ID, b["cover_file_id"],
+                    caption=f"🖼 {order['order_code']}-{b['seq_num']} — MUQOVA ({cover_label}): {b['cover_file_name']}"
                 )
-                await bot.send_message(config.PRINTED_GROUP_ID, info_text)
             except Exception:
-                pass
+                # Ba'zi fayl turlari (masalan ba'zi rasm formatlari) document
+                # sifatida yuborilmasa, photo sifatida qayta urinib ko'ramiz.
+                try:
+                    await bot.send_photo(
+                        config.PRINT_GROUP_ID, b["cover_file_id"],
+                        caption=f"🖼 {order['order_code']}-{b['seq_num']} — MUQOVA ({cover_label})"
+                    )
+                except Exception:
+                    pass
 
     delivery_info = order['delivery_detail'] or order['university'] or ''
     delivery_label = config.DELIVERY_TYPE_NAMES.get(order['delivery_type'], order['delivery_type'])
@@ -258,11 +317,6 @@ async def send_to_print_group(bot, order_id: int):
     if order["pochta_narxi"]:
         summary_lines.append(f"📮 Pochta narxi (mijozdan ALOHIDA olinadi): {format_money(order['pochta_narxi'])}")
     await bot.send_message(config.PRINT_GROUP_ID, "\n".join(summary_lines))
-    if config.PRINTED_GROUP_ID:
-        try:
-            await bot.send_message(config.PRINTED_GROUP_ID, "\n".join(summary_lines))
-        except Exception:
-            pass
 
     if order["receipt_file_id"]:
         if order["receipt_type"] == "photo":
@@ -272,30 +326,12 @@ async def send_to_print_group(bot, order_id: int):
 
 
 async def send_to_ready_group(bot, order_id: int):
-    """Buyurtma TAYYOR deb belgilangach (admin /tayyor orqali), kitob fayllari
-    'Tayyor kitoblar' guruhiga yuboriladi."""
-    import config
-    if not config.READY_GROUP_ID:
-        return
+    """Buyurtma TAYYOR deb belgilangach (admin /tayyor orqali) chaqiriladi.
 
-    order = db.get_order(order_id)
-    books = db.get_books_for_order(order_id)
-
-    await bot.send_message(config.READY_GROUP_ID, f"📗 TAYYOR — {order['order_code']}")
-    for b in books:
-        if b["status"] != "done":
-            continue
-        await bot.send_document(
-            config.READY_GROUP_ID, b["file_id"],
-            caption=f"{order['order_code']}-{b['seq_num']} — {b['file_name']}"
-        )
-
-    delivery_label = config.DELIVERY_TYPE_NAMES.get(order['delivery_type'], order['delivery_type'])
-    delivery_info = order['delivery_detail'] or order['university'] or ''
-    await bot.send_message(
-        config.READY_GROUP_ID,
-        f"🚚 Yetkazish: {delivery_label} {delivery_info}\n📞 {order['receiver_phone']}"
-    )
+    MUHIM: ENDI alohida "Tayyor kitoblar" guruhiga hech narsa yubormaydi -
+    kitob fayllari allaqachon YAGONA guruhda bor. Shunchaki shu buyurtmaning
+    holat xabarini ✅ TAYYOR ga TAHRIRLAYDI."""
+    await update_order_status_header(bot, order_id, "✅", "TAYYOR")
 
 
 async def send_to_courier_group(bot, order_id: int):

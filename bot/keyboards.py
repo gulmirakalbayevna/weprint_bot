@@ -196,9 +196,33 @@ def kb_ready_confirm():
     return b.as_markup()
 
 
+def kb_book_toggles(book_id: int, printed: bool, cover_printed: bool, packaging_done: bool):
+    """Print guruhida har bir kitob fayli ostida - UCHTA mustaqil tugma,
+    HAR BIR kitob uchun ISTISNOSIZ bir xil ko'rinishda chiqadi (endi
+    "maxsus muqova buyurtma qilinganmi" degan shartga bog'liq emas):
+    1) Print qilindi/qiling (toggleprint:)
+    2) Muqova chiqarildi/chiqaring (togglecover:)
+    3) Upakovka qilindi/qiling (togglepack:)
+
+    Uchalasi ham BIR MARTALIK: bosilgach "✅ ... qilindi" holatiga o'tadi va
+    ORQAGA QAYTARIB BO'LMAYDI - buni handlerlar o'zi tekshiradi (bu yerda
+    faqat joriy holatga qarab matn tanlanadi)."""
+    b = InlineKeyboardBuilder()
+    print_label = "✅ Print qilindi" if printed else "🖨 Print qiling"
+    b.button(text=print_label, callback_data=f"toggleprint:{book_id}")
+
+    cover_label = "✅ Muqova chiqarildi" if cover_printed else "🖼 Muqova chiqaring"
+    b.button(text=cover_label, callback_data=f"togglecover:{book_id}")
+
+    pack_label = "✅ Upakovka qilindi" if packaging_done else "📦 Upakovka qiling"
+    b.button(text=pack_label, callback_data=f"togglepack:{book_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def kb_book_print_toggle(book_id: int, printed: bool):
-    """Print guruhida har bir kitob fayli ostida - print holatini
-    ✅ (qilindi) / 🕐 (hali yo'q) ko'rinishida almashtirib turadigan tugma."""
+    """ESKI, BITTA tugmali versiya - orqaga moslik uchun saqlangan (endi
+    ishlatilmaydi, o'rniga kb_book_toggles ishlatiladi)."""
     b = InlineKeyboardBuilder()
     label = "✅ Print qilindi" if printed else "🕐 Print qilinishi kerak"
     b.button(text=label, callback_data=f"toggleprint:{book_id}")

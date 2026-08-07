@@ -63,6 +63,8 @@ def init_db():
             "ALTER TABLE orders ADD COLUMN ready_at TEXT",
             "ALTER TABLE orders ADD COLUMN delivered_at TEXT",
             "ALTER TABLE orders ADD COLUMN received_at TEXT",
+            "ALTER TABLE orders ADD COLUMN status_msg_chat_id INTEGER",     # BITTA guruhdagi "status" xabari
+            "ALTER TABLE orders ADD COLUMN status_msg_message_id INTEGER", # (rangli belgi bilan tahrirlanib turadi)
         ]:
             try:
                 cur.execute(column_def)
@@ -114,6 +116,16 @@ def init_db():
             "ALTER TABLE books ADD COLUMN source_message_id INTEGER",
             "ALTER TABLE books ADD COLUMN print_info_chat_id INTEGER",
             "ALTER TABLE books ADD COLUMN print_info_message_id INTEGER",
+            # MUHIM: bular avval FAQAT kodda ishlatilgan, lekin bazaga hech
+            # qachon qo'shilmagan edi - shu tufayli maxsus muqovali kitob
+            # print guruhga yuborilganda xato chiqarishi mumkin edi.
+            "ALTER TABLE books ADD COLUMN cover_choice TEXT",       # None/'front'/'front_back'
+            "ALTER TABLE books ADD COLUMN cover_price INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN cover_file_id TEXT",
+            "ALTER TABLE books ADD COLUMN cover_file_name TEXT",
+            # YANGI: Print guruhidagi 2 ta QO'SHIMCHA oddiy (ism talab qilmaydigan) tugma uchun.
+            "ALTER TABLE books ADD COLUMN cover_printed INTEGER DEFAULT 0",   # "Muqova chiqarildi"
+            "ALTER TABLE books ADD COLUMN packaging_done INTEGER DEFAULT 0",  # "Upakovka qilindi"
         ]:
             try:
                 cur.execute(column_def)

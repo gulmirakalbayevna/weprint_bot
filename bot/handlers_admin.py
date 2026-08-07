@@ -331,7 +331,7 @@ async def cmd_navbat(message: Message, bot: Bot, state: FSMContext):
     qolsa. Endi bu ham UMUMIY navbatdan (kitob YOKI chek) foydalanadi."""
     current = await state.get_state()
     if current is not None:
-        await message.answer("⚠️ Siz hozir band ko'rinasiz (joriy ishni avval tugating).")
+        await message.answer("⚠️ Siz hozir band ko'rinasiz (avval joriy ishni tugating).")
         return
     await try_dispatch_next_admin_task(bot, state.storage)
 
@@ -799,7 +799,7 @@ async def toggle_print_status(callback: CallbackQuery, state: FSMContext):
 
     prompt = await callback.message.answer(
         f"✍️ Kitob #{book['seq_num']} — ismingizni yozing:",
-        reply_markup=ForceReply(input_field_placeholder="Ismingiz")
+        reply_markup=ForceReply(input_field_placeholder="Ismingiz:")
     )
     # So'rov xabarining ID sini saqlaymiz - ism yozilgach buni o'chirib,
     # guruhda ortiqcha xabar qolmasligi uchun.
@@ -852,8 +852,10 @@ async def got_printer_name(message: Message, state: FSMContext, bot: Bot):
     db.update_book(book_id, printed=1, printed_by=name)
     book = db.get_book(book_id)
 
-    # Asl "info" xabarini tahrirlaymiz - ism shu xabarning o'ziga qo'shiladi,
-    # tugma olib tashlanadi (chunki endi qayta bosish shart emas).
+    # Asl "info" xabarini tahrirlaymiz - ism shu xabarning o'ziga qo'shiladi.
+    # MUHIM: tugmalarni BUTUNLAY olib tashlamaymiz - muqova/upakovka
+    # tugmalari hali kerak bo'lishi mumkin, shuning uchun ularni SAQLAB
+    # qolamiz, faqat "Print qilindi" holatini yangilaymiz.
     if book["print_info_chat_id"] and book["print_info_message_id"]:
         order = db.get_order(book["order_id"])
         vol = get_volume_count(book["page_count"])
@@ -868,10 +870,21 @@ async def got_printer_name(message: Message, state: FSMContext, bot: Bot):
             await bot.edit_message_text(
                 chat_id=book["print_info_chat_id"],
                 message_id=book["print_info_message_id"],
-                text=info_text
+                text=info_text,
+                reply_markup=kb.kb_book_toggles(
+                    book_id,
+                    printed=True,
+                    cover_printed=bool(book["cover_printed"]) if "cover_printed" in book.keys() else False,
+                    packaging_done=bool(book["packaging_done"]) if "packaging_done" in book.keys() else False,
+                )
             )
         except Exception:
             pass
+
+    # Buyurtmaning YAGONA guruhdagi rangli status xabarini yangilaymiz
+    # (🔴 -> 🟡 -> 🟢, barcha kitoblar print qilingan-qilinmaganiga qarab).
+    from utils import refresh_order_print_status
+    await refresh_order_print_status(bot, book["order_id"])
 
     # Tozalik uchun - so'rov ("ismingizni yozing") va xodimning javob xabarini
     # o'chiramiz, guruhda ortiqcha xabar qolib ketmasligi uchun.
@@ -884,6 +897,76 @@ async def got_printer_name(message: Message, state: FSMContext, bot: Bot):
             await bot.delete_message(message.chat.id, prompt_message_id)
         except Exception:
             pass
+
+
+@router.callback_query(
+    F.data.startswith("togglecover:"),
+    F.message.chat.id == config.PRINT_GROUP_ID
+)
+async def toggle_cover_status(callback: CallbackQuery):
+    """Muqova chiqarilganini belgilash - ism talab qilmaydi, lekin BIR
+    MARTALIK: bir marta "chiqarildi" deb belgilangach, ORQAGA QAYTARIB
+    BO'LMAYDI (print tugmasi kabi)."""
+    _, book_id = callback.data.split(":")
+    book_id = int(book_id)
+    book = db.get_book(book_id)
+    if not book:
+        await callback.answer("Topilmadi", show_alert=True)
+        return
+
+    if book["cover_printed"]:
+        await callback.answer("Bu kitob uchun muqova allaqachon chiqarilgan!", show_alert=True)
+        return
+
+    db.update_book(book_id, cover_printed=1)
+    book = db.get_book(book_id)
+    await callback.answer("✅ Muqova chiqarildi deb belgilandi")
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=kb.kb_book_toggles(
+                 book_id,
+                 printed=bool(book["printed"]),
+                 cover_printed=True,
+                 packaging_done=bool(book["packaging_done"]) if "packaging_done" in book.keys() else False,
+            )
+        )
+    except Exception:
+        pass
+@router.callback_query(
+    F.data.startswith("togglepack:"),
+    F.message.chat.id == config.PRINT_GROUP_ID
+)
+async def toggle_packaging_status(callback: CallbackQuery):
+    """Upakovka qilinganini belgilash - ism talab qilmaydi, lekin BIR
+    MARTALIK: bir marta "qilindi" deb belgilangach, ORQAGA QAYTARIB
+    BO'LMAYDI (print tugmasi kabi)."""
+    _, book_id = callback.data.split(":")
+    book_id = int(book_id)
+    book = db.get_book(book_id)
+    if not book:
+        await callback.answer("Topilmadi", show_alert=True)
+        return
+
+    if book["packaging_done"]:
+        await callback.answer("Bu kitob uchun upakovka allaqachon qilingan!", show_alert=True)
+        return
+
+    db.update_book(book_id, packaging_done=1)
+    book = db.get_book(book_id)
+    await callback.answer("✅ Upakovka qilindi deb belgilandi")
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=kb.kb_book_toggles(
+                book_id,
+                printed=bool(book["printed"]),
+                cover_printed=bool(book["cover_printed"]) if "cover_printed" in book.keys() else False,
+                packaging_done=True,
+            )
+        )
+    except Exception:
+        pass
 
 
 # ================= KURYER: YETKAZILDI =================
@@ -905,6 +988,9 @@ async def mark_delivered(callback: CallbackQuery, bot: Bot):
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
+
+    from utils import update_order_status_header
+    await update_order_status_header(bot, order_id, "📬", "MIJOZGA YETKAZILDI")
 
     try:
         await bot.send_message(

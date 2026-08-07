@@ -668,6 +668,15 @@ async def mark_order_received(callback: CallbackQuery, bot: Bot):
 
     await callback.message.answer("🎉 Xaridingiz uchun rahmat! Yana kitob kerak bo'lsa, biz doim shu yerdamiz 😊")
 
+    # Guruhdagi (Print guruh) shu buyurtmaning YAGONA status xabarini ham
+    # "OLDIM" holatiga yangilaymiz - mijoz o'zi qabul qilganini xodimlar
+    # ham guruhda ko'rib turishi uchun.
+    try:
+        from utils import update_order_status_header
+        await update_order_status_header(bot, order_id, "📗", "OLDIM (mijoz qabul qildi)")
+    except Exception:
+        pass
+
     try:
         await bot.send_message(config.ADMIN_ID, f"📗 {order['order_code']} — mijoz o'zi \"Oldim\" deb belgiladi.")
     except Exception:
