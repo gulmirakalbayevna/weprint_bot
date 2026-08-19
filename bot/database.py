@@ -65,6 +65,7 @@ def init_db():
             "ALTER TABLE orders ADD COLUMN received_at TEXT",
             "ALTER TABLE orders ADD COLUMN status_msg_chat_id INTEGER",     # BITTA guruhdagi "status" xabari
             "ALTER TABLE orders ADD COLUMN status_msg_message_id INTEGER", # (rangli belgi bilan tahrirlanib turadi)
+            "ALTER TABLE orders ADD COLUMN ready_notify_failed INTEGER DEFAULT 0",  # "tayyor" xabari mijozga YETMAGAN (masalan botni bloklagan) - keyin qayta yuborish uchun belgi
         ]:
             try:
                 cur.execute(column_def)
@@ -338,11 +339,12 @@ def get_completed_orders_in_range(lo_date: str, hi_date: str):
     [lo_date, hi_date] oralig'ida bo'lgan buyurtmalar - printerchi ular uchun
     'tayyor' deb belgilash imkoniyatiga ega bo'ladi.
 
-    MUHIM: faqat BARCHA kitoblari "✅ Print qilindi" deb belgilangan (printed=1)
-    buyurtmalar qaytariladi. Agar buyurtmaning biror kitobi hali chop
-    etilmagan bo'lsa (printed=0), butun buyurtma bu ro'yxatga KIRMAYDI - aks
-    holda hali tayyor bo'lmagan kitob uchun ham mijozga "tayyor" xabari
-    ketib qolar edi."""
+    MUHIM: faqat BARCHA kitoblarining UCHALA ishi ham bajarilgan
+    (printed=1 VA cover_printed=1 VA packaging_done=1) buyurtmalar
+    qaytariladi. Agar buyurtmaning biror kitobida shu uchtadan BIRORTASI
+    hali bajarilmagan bo'lsa, butun buyurtma bu ro'yxatga KIRMAYDI - aks
+    holda hali to'liq tayyor bo'lmagan (masalan muqovasi yoki upakovkasi
+    qilinmagan) kitob uchun ham mijozga "tayyor" xabari ketib qolar edi."""
     with closing(get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -354,7 +356,11 @@ def get_completed_orders_in_range(lo_date: str, hi_date: str):
                   SELECT 1 FROM books b
                   WHERE b.order_id = o.id
                     AND b.status != 'rejected'
-                    AND (b.printed IS NULL OR b.printed = 0)
+                    AND (
+                        b.printed IS NULL OR b.printed = 0
+                        OR b.cover_printed IS NULL OR b.cover_printed = 0
+                        OR b.packaging_done IS NULL OR b.packaging_done = 0
+                    )
               )
             ORDER BY o.completed_at
             """,
@@ -365,8 +371,9 @@ def get_completed_orders_in_range(lo_date: str, hi_date: str):
 
 def get_not_fully_printed_orders_in_range(lo_date: str, hi_date: str):
     """get_completed_orders_in_range bilan BIR XIL oraliq/status, lekin
-    TESKARI shart - hali barcha kitoblari print qilinmagan buyurtmalar.
-    Faqat adminga "shu N ta buyurtma hali tayyor emas" deb ko'rsatish uchun."""
+    TESKARI shart - kitoblaridan birortasida hali print/muqova/upakovka
+    uchtaligi to'liq bajarilmagan buyurtmalar. Faqat adminga "shu N ta
+    buyurtma hali tayyor emas" deb ko'rsatish uchun."""
     with closing(get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -378,11 +385,27 @@ def get_not_fully_printed_orders_in_range(lo_date: str, hi_date: str):
                   SELECT 1 FROM books b
                   WHERE b.order_id = o.id
                     AND b.status != 'rejected'
-                    AND (b.printed IS NULL OR b.printed = 0)
+                    AND (
+                        b.printed IS NULL OR b.printed = 0
+                        OR b.cover_printed IS NULL OR b.cover_printed = 0
+                        OR b.packaging_done IS NULL OR b.packaging_done = 0
+                    )
               )
             ORDER BY o.completed_at
             """,
             (lo_date, hi_date)
+        )
+        return cur.fetchall()
+
+
+def get_ready_notify_failed_orders():
+    """'ready' statusidagi, lekin mijozga 'tayyor' xabari YETMAGAN (masalan
+    botni bloklagan) buyurtmalar - admin ularga qayta xabar yuborishi uchun."""
+    with closing(get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM orders WHERE ready_notify_failed = 1 AND status IN ('ready', 'delivered') "
+            "ORDER BY ready_at"
         )
         return cur.fetchall()
 

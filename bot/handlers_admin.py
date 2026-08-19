@@ -3,6 +3,7 @@ from aiogram.types import Message, CallbackQuery, FSInputFile, ForceReply
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramForbiddenError
 
 import asyncio
 import config
@@ -1060,9 +1061,10 @@ async def got_ready_date_range(message: Message, state: FSMContext, bot: Bot):
         if not_printed_orders:
             codes = ", ".join(o["order_code"] for o in not_printed_orders)
             msg = await message.answer(
-                f"📭 Bu oraliqda TO'LIQ print qilingan buyurtma topilmadi.\n\n"
-                f"⚠️ {len(not_printed_orders)} ta buyurtma hali barcha kitoblari "
-                f"\"✅ Print qilindi\" deb belgilanmagani uchun tayyorga kiritilmadi: {codes}"
+                f"📭 Bu oraliqda TO'LIQ tayyor (print + muqova + upakovka) buyurtma topilmadi.\n\n"
+                f"⚠️ {len(not_printed_orders)} ta buyurtma hali barcha kitoblarida "
+                f"\"✅ Print qilindi\", \"✅ Muqova chiqarildi\" va \"✅ Upakovka qilindi\" "
+                f"UCHALASI HAM belgilanmagani uchun tayyorga kiritilmadi: {codes}"
             )
         else:
             msg = await message.answer("📭 Bu oraliqda tayyor qilinadigan buyurtma topilmadi.")
@@ -1080,7 +1082,10 @@ async def got_ready_date_range(message: Message, state: FSMContext, bot: Bot):
     # ko'rsatamiz, shunda "nega bu buyurtma ro'yxatda yo'q" degan savol
     # tug'ilmaydi (masalan kimdir hali kitob yuborib, print qilinmagan bo'lsa).
     if not_printed_orders:
-        lines.append(f"\n⚠️ Hali TO'LIQ print qilinmagani uchun KIRITILMADI ({len(not_printed_orders)} ta):")
+        lines.append(
+            f"\n⚠️ Hali barcha kitoblarida print+muqova+upakovka UCHALASI HAM "
+            f"bajarilmagani uchun KIRITILMADI ({len(not_printed_orders)} ta):"
+        )
         for o in not_printed_orders:
             lines.append(f"• {o['order_code']}")
 
@@ -1138,6 +1143,7 @@ async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: B
     from datetime import datetime as dt
 
     sent = 0
+    failed_orders = []
     ready_orders = []
     for oid in order_ids:
         order = db.get_order(oid)
@@ -1169,8 +1175,25 @@ async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: B
                     reply_markup=kb.kb_order_received(oid)
                 )
             sent += 1
-        except Exception:
-            pass
+            db.update_order(oid, ready_notify_failed=0)
+        except TelegramForbiddenError:
+            # Mijoz botni BLOKLAB QO'YGAN - qayta yuborish ham ishlamaydi,
+            # botdan tashqari yo'l bilan (telefon orqali) bog'lanish kerak.
+            import logging
+            logging.warning(
+                "Mijoz botni bloklagan, 'tayyor' xabari yetmadi | order_id=%s | order_code=%s | user_id=%s",
+                oid, order["order_code"], order["user_id"],
+            )
+            failed_orders.append(f"{order['order_code']} (bloklagan)")
+            db.update_order(oid, ready_notify_failed=1)
+        except Exception as e:
+            import logging
+            logging.exception(
+                "Mijozga 'tayyor' xabarini yuborib bo'lmadi | order_id=%s | order_code=%s | user_id=%s | xato: %s",
+                oid, order["order_code"], order["user_id"], e,
+            )
+            failed_orders.append(order["order_code"])
+            db.update_order(oid, ready_notify_failed=1)
 
         try:
             await send_to_ready_group(bot, oid)
@@ -1185,13 +1208,20 @@ async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: B
                 import logging
                 logging.exception("send_to_courier_group xato (order_id=%s)", oid)
 
-    result_msg = await bot.send_message(
-        chat_id,
-        f"✅ {sent}/{len(order_ids)} mijozga xabar yuborildi. Tayyor guruhiga jo'natildi."
-    )
+    result_lines = [f"✅ {sent}/{len(order_ids)} mijozga xabar yuborildi. Tayyor guruhiga jo'natildi."]
+    if failed_orders:
+        result_lines.append(
+            f"\n⚠️ {len(failed_orders)} ta mijozga xabar YUBORILMADI (ehtimol botni bloklagan): "
+            + ", ".join(failed_orders)
+        )
+        result_lines.append("\nQayta urinish uchun: /qaytaryubor")
+    result_msg = await bot.send_message(chat_id, "\n".join(result_lines))
 
-    # Natija xabarini 15 soniyadan keyin o'chirish (guruh tozalikni saqlasin)
-    asyncio.create_task(_delayed_delete(chat_id, [result_msg.message_id], delay=15, bot=bot))
+    # Natija xabarini o'chirish - lekin faqat XATOSIZ holatda (guruh
+    # tozalikni saqlasin). Agar biror mijozga xabar yuborilmagan bo'lsa,
+    # admin ko'rib qolishi uchun xabar O'CHIRILMAYDI.
+    if not failed_orders:
+        asyncio.create_task(_delayed_delete(chat_id, [result_msg.message_id], delay=15, bot=bot))
 
     # Nakleyka PDF sini yaratib, PRINT guruhiga yuboramiz - chop etib,
     # qirqib, har bir kitobga yopishtirish uchun.
@@ -1232,6 +1262,76 @@ async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: B
         import logging
         logging.exception("Nakleyka PDF yaratishda xato: %s", e)
         await bot.send_message(chat_id, "⚠️ Nakleyka PDF yaratishda xatolik yuz berdi (loglarga qarang).")
+
+
+# ================= "TAYYOR" XABARI YETMAGAN MIJOZLARGA QAYTA YUBORISH =================
+
+@router.message(Command("qaytaryubor"), F.chat.id == config.PRINT_GROUP_ID)
+async def cmd_resend_ready_notifications(message: Message, bot: Bot, state: FSMContext):
+    """/tayyor bosilganda ba'zi mijozlarga "✅ Buyurtmangiz tayyor!" xabari
+    YETMAGAN bo'lishi mumkin (eng ko'p uchraydigan sabab: mijoz botni
+    bloklab qo'ygan). Bunday buyurtmalar `ready_notify_failed=1` deb
+    belgilanadi (qarang: ready_batch_confirm). Bu buyruq o'sha
+    buyurtmalarning HAMMASIGA xabarni QAYTA yuborishga urinadi."""
+    failed_orders = db.get_ready_notify_failed_orders()
+    if not failed_orders:
+        await message.answer("✅ Hozircha yuborilmay qolgan 'tayyor' xabari yo'q.")
+        return
+
+    resent = []
+    still_failed = []
+
+    for order in failed_orders:
+        oid = order["id"]
+        try:
+            if order["delivery_type"] == "yandex":
+                user_key = StorageKey(bot_id=bot.id, chat_id=order["user_id"], user_id=order["user_id"])
+                user_fsm = FSMContext(storage=state.storage, key=user_key)
+                await user_fsm.set_state(UserFlow.waiting_yandex_link)
+                await user_fsm.update_data(order_id=oid)
+
+                await bot.send_message(
+                    order["user_id"],
+                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
+                    f"🚕 Pastdagi Ma'lumotlar tugmasini bosib <Yandex chaqirish> bo'limi orqali dostavka chaqiring.\n\n"
+                    f"Buyurtma ma'lumotlarini to'liq yubormasangiz, buyurtmangizni bera olmaymiz. Vaqtingizni qadrlang !:\n"
+                    f"Kitobni qo'lingizga olgach, pastdagi tugmani bosing 👇",
+                    reply_markup=kb.kb_order_received(oid)
+                )
+            else:
+                await bot.send_message(
+                    order["user_id"],
+                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
+                    f"Kutib qolamiz 😊",
+                    reply_markup=kb.kb_order_received(oid)
+                )
+            db.update_order(oid, ready_notify_failed=0)
+            resent.append(order["order_code"])
+        except TelegramForbiddenError:
+            import logging
+            logging.warning(
+                "Qayta yuborishda ham mijoz bloklagan | order_id=%s | order_code=%s | user_id=%s",
+                oid, order["order_code"], order["user_id"],
+            )
+            still_failed.append(f"{order['order_code']} (bloklagan)")
+        except Exception as e:
+            import logging
+            logging.exception(
+                "Qayta yuborishda ham xato | order_id=%s | order_code=%s | user_id=%s | xato: %s",
+                oid, order["order_code"], order["user_id"], e,
+            )
+            still_failed.append(order["order_code"])
+
+    lines = []
+    if resent:
+        lines.append(f"✅ {len(resent)} ta mijozga xabar QAYTA yuborildi: " + ", ".join(resent))
+    if still_failed:
+        lines.append(
+            f"\n❌ {len(still_failed)} ta mijozga HALI HAM yuborib bo'lmadi "
+            f"(botni bloklagan bo'lishi mumkin, mijozga boshqa yo'l bilan xabar berish kerak): "
+            + ", ".join(still_failed)
+        )
+    await message.answer("\n".join(lines))
 
 
 # ================= YORDAMCHI: kechikib o'chirish =================
