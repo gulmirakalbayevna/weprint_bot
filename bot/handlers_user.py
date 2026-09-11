@@ -292,6 +292,25 @@ async def got_document(message: Message, state: FSMContext, bot: Bot):
 
     await message.answer(f"✅ Fayl qabul qilindi\n📎 {message.document.file_name}\n\n⏳ Admin tekshirmoqda...")
 
+    # --- AI PRECHECK: fayl PDF bo'lsa, admin ishini yengillatish uchun
+    # avtomatik tahlil qilamiz (sahifa soni, orientatsiya, arab/diniy belgi).
+    # QISQA VAQT CHEGARASI bilan: tezkor internetda AI ulguradi, sekin
+    # bo'lsa - jim voz kechiladi va admin BEKORGA KUTIB QOLMAYDI.
+    if config.AI_PRECHECK_ENABLED and message.document.file_name.lower().endswith(".pdf"):
+        try:
+            await asyncio.wait_for(
+                _run_ai_precheck(book_id, message.document.file_id, bot), timeout=60.0
+            )
+        except asyncio.TimeoutError:
+            logging.warning(
+                "AI precheck: 60 soniyada ulgurmadi (book_id=%s) - qo'lda davom etiladi",
+                book_id,
+            )
+        except Exception:
+            logging.exception(
+                "AI precheck ishlamadi (book_id=%s) - qo'lda davom etiladi", book_id
+            )
+
     # MUHIM: bu kitob endi ADMIN UCHUN UMUMIY NAVBATGA qo'shiladi (kitoblar
     # VA cheklar bitta navbatda). Agar admin band bo'lmasa, DARHOL ko'rsatiladi;
     # band bo'lsa (masalan boshqa kitob yoki chek bilan ishlayotgan bo'lsa) -
@@ -300,6 +319,58 @@ async def got_document(message: Message, state: FSMContext, bot: Bot):
     db.create_admin_task("book", book_id)
     from handlers_admin import try_dispatch_next_admin_task
     await try_dispatch_next_admin_task(bot, state.storage)
+
+
+async def _run_ai_precheck(book_id: int, file_id: str, bot: Bot):
+    """PDF'ni yuklab olib, AI tahlil qilib, natijani bazaga yozadi.
+    (Tashqarida asyncio.wait_for bilan vaqt chegaralanadi.)"""
+    import os as _os
+
+    _os.makedirs("ai_tmp", exist_ok=True)
+    tmp_path = f"ai_tmp/book_{book_id}.pdf"
+    try:
+        import ai_precheck
+
+        await bot.download(file_id, destination=tmp_path)
+
+        analysis = ai_precheck.analyze_pdf(tmp_path)
+        if analysis.get("ok"):
+            db.update_book(
+                book_id,
+                ai_analyzed=1,
+                ai_page_count=analysis["page_count"],
+                ai_book_type_guess=analysis["book_type_guess"],
+                ai_mixed_orientation=int(analysis["is_mixed_orientation"]),
+                ai_religious_flag=int(analysis["has_religious_flag"]),
+            )
+            logging.info(
+                "AI tahlili OK (book_id=%s): %s bet, tur=%s, aralash=%s, diniy_flag=%s",
+                book_id, analysis["page_count"], analysis["book_type_guess"],
+                analysis["is_mixed_orientation"], analysis["has_religious_flag"],
+            )
+        else:
+            logging.warning(
+                "AI tahlili BAJARILMADI (book_id=%s): %s — qo'lda davom etiladi",
+                book_id, analysis.get("reason"),
+            )
+    finally:
+        try:
+            _os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+@router.message(UserFlow.sending_books)
+async def got_non_document_in_sending_books(message: Message):
+    """MUHIM: yuqoridagi handler faqat F.document (fayl) ni ushlaydi. Agar
+    mijoz shu bosqichda rasm, matn, stiker va h.k. yuborsa - avvalgi kodda
+    HECH QANDAY handler mos kelmasdi va bot JIM qolib ketardi (mijoz hech
+    qanday javob olmasdi, botni "ishlamayapti" deb o'ylashi mumkin edi).
+    Endi bunday hollarda aniq yo'riqnoma beriladi."""
+    await message.answer(
+        "❗ Iltimos, kitobingizni FAQAT fayl (PDF yoki Word) ko'rinishida yuboring.\n\n"
+        "Rasm, matn yoki boshqa turdagi xabar qabul qilinmaydi."
+    )
 
 
 # ================= NUSXA SONI: "Boshqa" tanlanganda son kiritish =================
@@ -870,6 +941,13 @@ import re
 
 @router.message(UserFlow.waiting_receiver_phone)
 async def got_custom_receiver_phone(message: Message, state: FSMContext, bot: Bot):
+    if not message.text:
+        await message.answer(
+            "❗ Iltimos, telefon raqamini FAQAT matn ko'rinishida yuboring:\n\n"
+            "+998xxxxxxxxx"
+        )
+        return
+
     phone = message.text.strip()
 
     if not re.fullmatch(r"\+998\d{9}", phone):
@@ -889,6 +967,10 @@ async def got_custom_receiver_phone(message: Message, state: FSMContext, bot: Bo
 
 @router.message(UserFlow.waiting_receiver_name)
 async def got_receiver_name(message: Message, state: FSMContext, bot: Bot):
+    if not message.text:
+        await message.answer("❗ Iltimos, ismni FAQAT matn ko'rinishida yuboring.")
+        return
+
     data = await state.get_data()
 
     order_id = data["order_id"]

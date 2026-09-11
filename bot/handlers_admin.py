@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, FSInputFile, ForceReply
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.filters import Command
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter, TelegramNetworkError
 
 import asyncio
 import config
@@ -104,6 +104,40 @@ async def _present_admin_task(bot: Bot, admin_state: FSMContext, claimed: dict):
             await try_dispatch_next_admin_task(bot, admin_state.storage)
             return
 
+        # --- AI AVTO-TASDIQLASH: fayl "toza" va orientatsiya bir xil bo'lsa,
+        # config.AI_AUTO_APPROVE_ENABLED yoqilgan bo'lsa, admin'dan SO'RAMASDAN
+        # sahifa soni + Knijniy/Albom turini AI o'zi belgilaydi va formatga o'tadi.
+        # MUHIM: arab/diniy belgi yoki aralash orientatsiya bo'lsa BU YERGA
+        # HECH QACHON kirilmaydi - pastdagi "aks holda" qismiga o'tadi.
+        if (
+            config.AI_AUTO_APPROVE_ENABLED
+            and book["ai_analyzed"]
+            and not book["ai_religious_flag"]
+            and not book["ai_mixed_orientation"]
+            and book["ai_book_type_guess"] in ("knijniy", "albom")
+        ):
+            db.update_book(
+                book["id"],
+                page_count=book["ai_page_count"],
+                book_type=book["ai_book_type_guess"],
+                status="awaiting_format",
+                ai_auto_approved=1,
+            )
+            type_label = "📕 Knijniy" if book["ai_book_type_guess"] == "knijniy" else "📘 Albomniy"
+            try:
+                await bot.send_message(
+                    config.ADMIN_ID,
+                    f"🤖 AI avtomatik qayta ishladi — №{book['seq_num']} ({_plain(book['file_name'])})\n"
+                    f"{book['ai_page_count']} bet, {type_label}\n"
+                    f"(Diqqat talab qilinmadi — orientatsiya bir xil, diniy/arab belgisi topilmadi)"
+                )
+            except Exception:
+                pass
+
+            await send_format_step(bot, order["user_id"], book["id"])
+            await try_dispatch_next_admin_task(bot, admin_state.storage)
+            return
+
         await admin_state.set_state(AdminFlow.waiting_page_count)
         await admin_state.update_data(book_id=book["id"])
 
@@ -116,10 +150,37 @@ async def _present_admin_task(bot: Bot, admin_state: FSMContext, claimed: dict):
                 except Exception:
                     pass
 
+        # --- AI OGOHLANTIRISHI: agar arab/diniy belgi yoki aralash
+        # orientatsiya topilgan bo'lsa, adminga DIQQAT bilan tekshirish
+        # kerakligini alohida xabar bilan bildiramiz. AI HECH QACHON o'zi
+        # rad etmaydi yoki qabul qilmaydi - faqat ogohlantiradi.
+        if book["ai_analyzed"]:
+            warnings = []
+            if book["ai_religious_flag"]:
+                warnings.append(
+                    "🕌⚠️ AI OGOHLANTIRISHI: ushbu faylda arab yozuvi yoki diniy "
+                    "tarkib belgilari topilgan bo'lishi mumkin. DIQQAT bilan tekshiring!"
+                )
+            if book["ai_mixed_orientation"]:
+                warnings.append(
+                    "📐⚠️ AI OGOHLANTIRISHI: PDF sahifalari ARALASH (ham kitob, "
+                    "ham albom ko'rinishida). Turini diqqat bilan tanlang."
+                )
+            if warnings:
+                try:
+                    await bot.send_message(config.ADMIN_ID, "\n\n".join(warnings))
+                except Exception:
+                    pass
+
+            hint = f"\n\n🤖 AI aniqlagan sahifalar soni (tasdiqlang yoki to'g'irlang): {book['ai_page_count']}" \
+                if book["ai_page_count"] else ""
+        else:
+            hint = ""
+
         await bot.send_message(
             config.ADMIN_ID,
             f"➡️ Navbatdagi kitob: №{book['seq_num']} ({_plain(book['file_name'])})\n"
-            f"Sahifa sonini kiriting:"
+            f"Sahifa sonini kiriting:{hint}"
         )
 
     elif claimed["task_type"] in ("receipt", "receipt_pochta"):
@@ -1106,6 +1167,89 @@ async def got_ready_date_range(message: Message, state: FSMContext, bot: Bot):
     await state.set_state(AdminFlow.waiting_ready_confirm)
 
 
+async def _send_ready_message_to_customer(bot: Bot, storage, order, oid: int) -> tuple[bool, str]:
+    """Mijozga "✅ Buyurtmangiz tayyor!" xabarini yuboradi.
+
+    Bu funksiya /tayyor (ready_batch_confirm) va /qaytaryubor
+    (cmd_resend_ready_notifications) ikkalasida ISHLATILADI - shu bilan
+    yuborish mantiqi BITTA joyda saqlanadi.
+
+    MUHIM: mijoz botni bloklamagan, hech narsaga tegmagan bo'lsa ham xabar
+    ketmasligining eng ko'p uchraydigan sababi - Telegramning "flood
+    control" (bir vaqtda juda ko'p xabar yuborilganda serverning vaqtincha
+    "kut" deb qaytargan javobi, TelegramRetryAfter). Bu XATO EMAS, VAQTINCHA
+    HOLAT - shuning uchun bu yerda serverning aytgan vaqtini kutib, 3
+    martagacha AVTOMATIK qayta uriniladi. Oldingi versiyada bu xato ham
+    boshqa xatolar bilan bir xil "except Exception: pass" ostida yo'qolib
+    ketardi va hech qachon qayta urinilmasdi.
+
+    Qaytaradi: (muvaffaqiyatli_bo'ldimi, agar_yo'q_bo'lsa_sabab_belgisi)
+    sabab_belgisi: "" (muvaffaqiyatli) | "blocked" | "other"
+    """
+    for attempt in range(3):
+        try:
+            if order["delivery_type"] == "yandex":
+                user_key = StorageKey(bot_id=bot.id, chat_id=order["user_id"], user_id=order["user_id"])
+                user_fsm = FSMContext(storage=storage, key=user_key)
+                await user_fsm.set_state(UserFlow.waiting_yandex_link)
+                await user_fsm.update_data(order_id=oid)
+
+                await bot.send_message(
+                    order["user_id"],
+                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
+                    f"🚕 Pastdagi Ma'lumotlar tugmasini bosib <Yandex chaqirish> bo'limi orqali dostavka chaqiring.\n\n"
+                    f"Buyurtma ma'lumotlarini to'liq yubormasangiz, buyurtmangizni bera olmaymiz. Vaqtingizni qadrlang !:\n"
+                    f"Kitobni qo'lingizga olgach, pastdagi tugmani bosing 👇",
+                    reply_markup=kb.kb_order_received(oid)
+                )
+            else:
+                await bot.send_message(
+                    order["user_id"],
+                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
+                    f"Kutib qolamiz 😊",
+                    reply_markup=kb.kb_order_received(oid)
+                )
+            return True, ""
+        except TelegramRetryAfter as e:
+            import logging
+            logging.warning(
+                "Flood control (retry_after=%s) - kutib qayta urinamiz | order_id=%s | order_code=%s | urinish=%s",
+                e.retry_after, oid, order["order_code"], attempt + 1,
+            )
+            await asyncio.sleep(e.retry_after + 0.5)
+            continue
+        except TelegramNetworkError as e:
+            import logging
+            logging.warning(
+                "Tarmoq xatosi, 2 soniyadan keyin qayta urinamiz | order_id=%s | order_code=%s | urinish=%s | xato: %s",
+                oid, order["order_code"], attempt + 1, e,
+            )
+            await asyncio.sleep(2)
+            continue
+        except TelegramForbiddenError:
+            import logging
+            logging.warning(
+                "Mijoz botni bloklagan, 'tayyor' xabari yetmadi | order_id=%s | order_code=%s | user_id=%s",
+                oid, order["order_code"], order["user_id"],
+            )
+            return False, "blocked"
+        except Exception as e:
+            import logging
+            logging.exception(
+                "Mijozga 'tayyor' xabarini yuborib bo'lmadi | order_id=%s | order_code=%s | user_id=%s | xato: %s",
+                oid, order["order_code"], order["user_id"], e,
+            )
+            return False, "other"
+
+    # Uchta urinishdan keyin ham flood control/tarmoq xatosi davom etsa
+    import logging
+    logging.error(
+        "3 marta urinishdan keyin ham yuborib bo'lmadi | order_id=%s | order_code=%s",
+        oid, order["order_code"],
+    )
+    return False, "other"
+
+
 @router.callback_query(F.data.startswith("readybatch:"), F.message.chat.id == config.PRINT_GROUP_ID)
 async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
     _, action = callback.data.split(":")
@@ -1151,49 +1295,20 @@ async def ready_batch_confirm(callback: CallbackQuery, state: FSMContext, bot: B
         order = db.get_order(oid)  # yangilangan holatni qayta o'qiymiz
         ready_orders.append(order)
 
-        try:
-            if order["delivery_type"] == "yandex":
-                user_key = StorageKey(bot_id=bot.id, chat_id=order["user_id"], user_id=order["user_id"])
-                user_fsm = FSMContext(storage=state.storage, key=user_key)
-                await user_fsm.set_state(UserFlow.waiting_yandex_link)
-                await user_fsm.update_data(order_id=oid)
-
-                await bot.send_message(
-                    order["user_id"],
-                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
-                    f"🚕 Pastdagi Ma'lumotlar tugmasini bosib <Yandex chaqirish> bo'limi orqali dostavka chaqiring.\n\n"
-                    f"Buyurtma ma'lumotlarini to'liq yubormasangiz, buyurtmangizni bera olmaymiz. Vaqtingizni qadrlang !:\n"
-    
-                    f"Kitobni qo'lingizga olgach, pastdagi tugmani bosing 👇",
-                    reply_markup=kb.kb_order_received(oid)
-                )
-            else:
-                await bot.send_message(
-                    order["user_id"],
-                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
-                    f"Kutib qolamiz 😊",
-                    reply_markup=kb.kb_order_received(oid)
-                )
+        success, reason = await _send_ready_message_to_customer(bot, state.storage, order, oid)
+        if success:
             sent += 1
             db.update_order(oid, ready_notify_failed=0)
-        except TelegramForbiddenError:
-            # Mijoz botni BLOKLAB QO'YGAN - qayta yuborish ham ishlamaydi,
-            # botdan tashqari yo'l bilan (telefon orqali) bog'lanish kerak.
-            import logging
-            logging.warning(
-                "Mijoz botni bloklagan, 'tayyor' xabari yetmadi | order_id=%s | order_code=%s | user_id=%s",
-                oid, order["order_code"], order["user_id"],
-            )
-            failed_orders.append(f"{order['order_code']} (bloklagan)")
+        else:
+            label = f"{order['order_code']} (bloklagan)" if reason == "blocked" else order["order_code"]
+            failed_orders.append(label)
             db.update_order(oid, ready_notify_failed=1)
-        except Exception as e:
-            import logging
-            logging.exception(
-                "Mijozga 'tayyor' xabarini yuborib bo'lmadi | order_id=%s | order_code=%s | user_id=%s | xato: %s",
-                oid, order["order_code"], order["user_id"], e,
-            )
-            failed_orders.append(order["order_code"])
-            db.update_order(oid, ready_notify_failed=1)
+
+        # Ketma-ket ko'p mijozga bir zumda yozish Telegramning flood-control
+        # chegarasiga urilib qolishi mumkin - shu sababli har bir yuborishdan
+        # keyin qisqa tanaffus qilamiz (bu deyarli sezilmaydi, lekin flood
+        # xatosi ehtimolini sezilarli kamaytiradi).
+        await asyncio.sleep(0.08)
 
         try:
             await send_to_ready_group(bot, oid)
@@ -1283,44 +1398,14 @@ async def cmd_resend_ready_notifications(message: Message, bot: Bot, state: FSMC
 
     for order in failed_orders:
         oid = order["id"]
-        try:
-            if order["delivery_type"] == "yandex":
-                user_key = StorageKey(bot_id=bot.id, chat_id=order["user_id"], user_id=order["user_id"])
-                user_fsm = FSMContext(storage=state.storage, key=user_key)
-                await user_fsm.set_state(UserFlow.waiting_yandex_link)
-                await user_fsm.update_data(order_id=oid)
-
-                await bot.send_message(
-                    order["user_id"],
-                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
-                    f"🚕 Pastdagi Ma'lumotlar tugmasini bosib <Yandex chaqirish> bo'limi orqali dostavka chaqiring.\n\n"
-                    f"Buyurtma ma'lumotlarini to'liq yubormasangiz, buyurtmangizni bera olmaymiz. Vaqtingizni qadrlang !:\n"
-                    f"Kitobni qo'lingizga olgach, pastdagi tugmani bosing 👇",
-                    reply_markup=kb.kb_order_received(oid)
-                )
-            else:
-                await bot.send_message(
-                    order["user_id"],
-                    f"✅ Buyurtmangiz tayyor!\n\n📌 Buyurtma raqami: {order['order_code']}\n\n"
-                    f"Kutib qolamiz 😊",
-                    reply_markup=kb.kb_order_received(oid)
-                )
+        success, reason = await _send_ready_message_to_customer(bot, state.storage, order, oid)
+        if success:
             db.update_order(oid, ready_notify_failed=0)
             resent.append(order["order_code"])
-        except TelegramForbiddenError:
-            import logging
-            logging.warning(
-                "Qayta yuborishda ham mijoz bloklagan | order_id=%s | order_code=%s | user_id=%s",
-                oid, order["order_code"], order["user_id"],
-            )
-            still_failed.append(f"{order['order_code']} (bloklagan)")
-        except Exception as e:
-            import logging
-            logging.exception(
-                "Qayta yuborishda ham xato | order_id=%s | order_code=%s | user_id=%s | xato: %s",
-                oid, order["order_code"], order["user_id"], e,
-            )
-            still_failed.append(order["order_code"])
+        else:
+            label = f"{order['order_code']} (bloklagan)" if reason == "blocked" else order["order_code"]
+            still_failed.append(label)
+        await asyncio.sleep(0.08)
 
     lines = []
     if resent:

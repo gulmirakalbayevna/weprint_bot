@@ -46,6 +46,19 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "weprint_orders_bot")
 # QABUL QILINMAYDI - faqat eslatma, pulni tekshirish baribir admin qo'lida qoladi).
 ADMIN_REMINDER_MINUTES = 20
 
+# ============ AI PRECHECK (yangi) ============
+# Kitob PDF sifatida yuborilganda, admin qo'lida ish qilmasdan oldin
+# avtomatik tekshirish (sahifa soni, orientatsiya, arab/diniy belgi).
+# False qilib qo'ysangiz — hamma narsa ILGARIGIDEK, 100% qo'lda ishlaydi.
+AI_PRECHECK_ENABLED = os.getenv("AI_PRECHECK_ENABLED", "1") == "1"
+
+# True bo'lsa: fayl "toza" (arab/diniy belgisi yo'q) VA orientatsiya bir xil
+# (aralash emas) bo'lganda, admin'dan SO'RAMASDAN avtomatik davom etadi
+# (sahifa soni + Knijniy/Albom turi AI tomonidan belgilanadi).
+# False bo'lsa: AI faqat MASLAHAT sifatida ko'rsatiladi, admin baribir
+# qo'lda sahifa sonini kiritadi va turini tanlaydi (xavfsizroq, sekinroq).
+AI_AUTO_APPROVE_ENABLED = os.getenv("AI_AUTO_APPROVE_ENABLED", "0") == "1"
+
 # ============ NARXLAR (weprint.uz saytining haqiqiy formulasi asosida) ============
 PRICE_PER_PAGE_BW = 260       # 1 bet, oq-qora
 PRICE_PER_PAGE_COLOR = 370    # 1 bet, rangli

@@ -127,6 +127,13 @@ def init_db():
             # YANGI: Print guruhidagi 2 ta QO'SHIMCHA oddiy (ism talab qilmaydigan) tugma uchun.
             "ALTER TABLE books ADD COLUMN cover_printed INTEGER DEFAULT 0",   # "Muqova chiqarildi"
             "ALTER TABLE books ADD COLUMN packaging_done INTEGER DEFAULT 0",  # "Upakovka qilindi"
+            # YANGI (AI PRECHECK): PDF avtomatik tahlil natijalari.
+            "ALTER TABLE books ADD COLUMN ai_analyzed INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN ai_page_count INTEGER",
+            "ALTER TABLE books ADD COLUMN ai_book_type_guess TEXT",       # knijniy / albom / NULL(aralash)
+            "ALTER TABLE books ADD COLUMN ai_mixed_orientation INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN ai_religious_flag INTEGER DEFAULT 0",
+            "ALTER TABLE books ADD COLUMN ai_auto_approved INTEGER DEFAULT 0",  # admin so'ralmay o'tganmi
         ]:
             try:
                 cur.execute(column_def)
