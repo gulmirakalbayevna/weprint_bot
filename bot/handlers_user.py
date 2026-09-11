@@ -54,6 +54,19 @@ async def got_phone(message: Message, state: FSMContext):
 
 # ================= ASOSIY MENYU =================
 
+_MID_ORDER_STATE_LABELS = {
+    UserFlow.sending_books.state: "📄 kitob faylini yuborish",
+    UserFlow.waiting_copies.state: "🔢 nusxalar sonini kiritish",
+    UserFlow.waiting_delivery_address.state: "📍 yetkazib berish manzilini kiritish",
+    UserFlow.waiting_receiver_phone.state: "📞 qabul qiluvchi telefon raqamini kiritish",
+    UserFlow.waiting_receiver_name.state: "👤 qabul qiluvchi ismini kiritish",
+    UserFlow.waiting_receipt.state: "💳 to'lov chekini yuborish",
+    UserFlow.waiting_receipt_pochta.state: "💳 pochta to'lovi chekini yuborish",
+    UserFlow.waiting_yandex_link.state: "🚕 taksi ma'lumotini yuborish",
+    UserFlow.waiting_price_calc_pages.state: "💰 narx hisoblash uchun sahifa sonini kiritish",
+}
+
+
 async def _block_if_mid_order(message: Message, state: FSMContext) -> bool:
     """
     True qaytarsa - foydalanuvchi hozir buyurtma jarayonining biror bosqichida
@@ -71,8 +84,11 @@ async def _block_if_mid_order(message: Message, state: FSMContext) -> bool:
         )
         return True
     if current not in (None, UserFlow.main_menu.state):
+        label = _MID_ORDER_STATE_LABELS.get(current, "joriy ish")
         await message.answer(
-            "⚠️ Iltimos, avval joriy ishni tugating yoki pastdagi \"❌ Bekor qilish\" tugmasini bosing."
+            f"⚠️ Siz hozir \"{label}\" bosqichidasiz.\n\n"
+            f"Iltimos, avval shuni yakunlang, yoki pastdagi \"❌ Bekor qilish\" tugmasini bosing.",
+            reply_markup=kb.kb_cancel_persistent()
         )
         return True
     return False
@@ -138,7 +154,32 @@ async def cancel_specific_order(callback: CallbackQuery):
 async def price_calc(message: Message, state: FSMContext):
     if await _block_if_mid_order(message, state):
         return
-    await message.answer("Narxni saytimiz orqali hisoblashingiz mumkin 👇", reply_markup=kb.kb_price_calc())
+    await message.answer(
+        "🌐 Narxni saytimiz orqali ham hisoblashingiz mumkin 👇\n\n"
+        "✍️ Yoki shu yerga kitobingiz necha BETdan iboratligini yozing — "
+        "narxini darhol hisoblab beraman.",
+        reply_markup=kb.kb_price_calc()
+    )
+    await state.set_state(UserFlow.waiting_price_calc_pages)
+
+
+@router.message(UserFlow.waiting_price_calc_pages)
+async def got_price_calc_pages(message: Message, state: FSMContext):
+    if not message.text or not message.text.strip().isdigit():
+        await message.answer("Iltimos, faqat sahifalar sonini raqam bilan yozing. Masalan: 120")
+        return
+
+    page_count = int(message.text.strip())
+    prices = calc_single_copy_prices(page_count)
+    vol = get_volume_count(page_count)
+    vol_text = f" ({vol} jild)" if vol > 1 else ""
+
+    lines = [f"💰 {page_count} bet{vol_text} uchun narxlar (1 nusxa):", ""]
+    for fmt_key, label in config.FORMAT_NAMES.items():
+        lines.append(f"{label}: {format_money(prices[fmt_key])}")
+
+    await message.answer("\n".join(lines), reply_markup=kb.kb_main_menu())
+    await state.set_state(UserFlow.main_menu)
 
 
 @router.message(F.text == "ℹ️ Ma'lumotlar")
@@ -294,9 +335,7 @@ async def got_document(message: Message, state: FSMContext, bot: Bot):
 
     # --- AI PRECHECK: fayl PDF bo'lsa, admin ishini yengillatish uchun
     # avtomatik tahlil qilamiz (sahifa soni, orientatsiya, arab/diniy belgi).
-    # QISQA VAQT CHEGARASI bilan: tezkor internetda AI ulguradi, sekin
-    # bo'lsa - jim voz kechiladi va admin BEKORGA KUTIB QOLMAYDI.
-    if config.AI_PRECHECK_ENABLED and message.document.file_name.lower().endswith(".pdf"):
+    if getattr(config, "AI_PRECHECK_ENABLED", False) and message.document.file_name.lower().endswith(".pdf"):
         try:
             await asyncio.wait_for(
                 _run_ai_precheck(book_id, message.document.file_id, bot), timeout=60.0
@@ -322,8 +361,7 @@ async def got_document(message: Message, state: FSMContext, bot: Bot):
 
 
 async def _run_ai_precheck(book_id: int, file_id: str, bot: Bot):
-    """PDF'ni yuklab olib, AI tahlil qilib, natijani bazaga yozadi.
-    (Tashqarida asyncio.wait_for bilan vaqt chegaralanadi.)"""
+    """PDF'ni yuklab olib, AI tahlil qilib, natijani bazaga yozadi."""
     import os as _os
 
     _os.makedirs("ai_tmp", exist_ok=True)

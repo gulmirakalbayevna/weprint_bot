@@ -130,10 +130,10 @@ def init_db():
             # YANGI (AI PRECHECK): PDF avtomatik tahlil natijalari.
             "ALTER TABLE books ADD COLUMN ai_analyzed INTEGER DEFAULT 0",
             "ALTER TABLE books ADD COLUMN ai_page_count INTEGER",
-            "ALTER TABLE books ADD COLUMN ai_book_type_guess TEXT",       # knijniy / albom / NULL(aralash)
+            "ALTER TABLE books ADD COLUMN ai_book_type_guess TEXT",
             "ALTER TABLE books ADD COLUMN ai_mixed_orientation INTEGER DEFAULT 0",
             "ALTER TABLE books ADD COLUMN ai_religious_flag INTEGER DEFAULT 0",
-            "ALTER TABLE books ADD COLUMN ai_auto_approved INTEGER DEFAULT 0",  # admin so'ralmay o'tganmi
+            "ALTER TABLE books ADD COLUMN ai_auto_approved INTEGER DEFAULT 0",
         ]:
             try:
                 cur.execute(column_def)

@@ -7,6 +7,7 @@ class UserFlow(StatesGroup):
     sending_books = State()          # PDF yuborish bosqichi
     waiting_copies = State()         # nusxa sonini kutish (Boshqa: tanlansa)
     waiting_delivery_address = State()
+    waiting_price_calc_pages = State()
     waiting_receiver_phone = State()
     waiting_receiver_name = State()   # qabul qiluvchi telefon+ISMINI kiritish (yangi qo'shilgan)
     waiting_receipt = State()

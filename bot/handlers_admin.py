@@ -107,10 +107,8 @@ async def _present_admin_task(bot: Bot, admin_state: FSMContext, claimed: dict):
         # --- AI AVTO-TASDIQLASH: fayl "toza" va orientatsiya bir xil bo'lsa,
         # config.AI_AUTO_APPROVE_ENABLED yoqilgan bo'lsa, admin'dan SO'RAMASDAN
         # sahifa soni + Knijniy/Albom turini AI o'zi belgilaydi va formatga o'tadi.
-        # MUHIM: arab/diniy belgi yoki aralash orientatsiya bo'lsa BU YERGA
-        # HECH QACHON kirilmaydi - pastdagi "aks holda" qismiga o'tadi.
         if (
-            config.AI_AUTO_APPROVE_ENABLED
+            getattr(config, "AI_AUTO_APPROVE_ENABLED", False)
             and book["ai_analyzed"]
             and not book["ai_religious_flag"]
             and not book["ai_mixed_orientation"]
@@ -150,10 +148,7 @@ async def _present_admin_task(bot: Bot, admin_state: FSMContext, claimed: dict):
                 except Exception:
                     pass
 
-        # --- AI OGOHLANTIRISHI: agar arab/diniy belgi yoki aralash
-        # orientatsiya topilgan bo'lsa, adminga DIQQAT bilan tekshirish
-        # kerakligini alohida xabar bilan bildiramiz. AI HECH QACHON o'zi
-        # rad etmaydi yoki qabul qilmaydi - faqat ogohlantiradi.
+        hint = ""
         if book["ai_analyzed"]:
             warnings = []
             if book["ai_religious_flag"]:
@@ -171,11 +166,8 @@ async def _present_admin_task(bot: Bot, admin_state: FSMContext, claimed: dict):
                     await bot.send_message(config.ADMIN_ID, "\n\n".join(warnings))
                 except Exception:
                     pass
-
-            hint = f"\n\n🤖 AI aniqlagan sahifalar soni (tasdiqlang yoki to'g'irlang): {book['ai_page_count']}" \
-                if book["ai_page_count"] else ""
-        else:
-            hint = ""
+            if book["ai_page_count"]:
+                hint = f"\n\n🤖 AI aniqlagan sahifalar soni (tasdiqlang yoki to'g'irlang): {book['ai_page_count']}"
 
         await bot.send_message(
             config.ADMIN_ID,
@@ -458,6 +450,30 @@ async def choose_book_type(callback: CallbackQuery, bot: Bot, state: FSMContext)
             f"(diniy kitob yoki mualliflik huquqi cheklovi sabab bo'lishi mumkin).\n\n"
             f"❓ Savolingiz bo'lsa, murojaat qiling: @{config.SUPPORT_USERNAME}"
         )
+
+        # MIJOZ TARAFIDA HAM AVTOMATIK TOZALASH: mijoz "Bekor qilish"ni o'zi
+        # bosishi SHART EMAS. Agar buyurtmada boshqa tasdiqlangan kitob
+        # bo'lmasa - butun buyurtma bekor qilinadi va mijoz asosiy menyuga
+        # qaytariladi; bo'lsa - qolgan kitoblar bilan davom etish taklif qilinadi.
+        remaining = [b for b in db.get_books_for_order(book["order_id"]) if b["status"] == "done"]
+        user_key = StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id)
+        user_fsm = FSMContext(storage=state.storage, key=user_key)
+
+        if not remaining:
+            db.update_order(book["order_id"], status="cancelled")
+            await user_fsm.clear()
+            try:
+                await bot.send_message(user_id, config.TXT_MAIN_MENU, reply_markup=kb.kb_main_menu())
+            except Exception:
+                pass
+            await user_fsm.set_state(UserFlow.main_menu)
+        else:
+            try:
+                await bot.send_message(user_id, "Yana kitob qo'shasizmi?", reply_markup=kb.kb_add_more(book["order_id"]))
+            except Exception:
+                pass
+            await user_fsm.set_state(UserFlow.sending_books)
+
         # Rad etilgach ham, shu kitob uchun admin vazifasi tugadi -
         # navbatdagi kitobga o'tamiz. MUHIM: avval state.clear() - aks holda
         # admin hali "waiting_book_type" holatida qolib, dispatcher uni
@@ -758,9 +774,50 @@ async def admin_accept_order(callback: CallbackQuery, bot: Bot, state: FSMContex
     await bot.send_message(user_id, "Qanday olib olasiz?", reply_markup=kb.kb_delivery(order_id))
     await callback.message.answer(f"✅ To'lov qabul qilindi — {order_code}. Mijoz endi yetkazishni tanlaydi.")
 
+    # YANGI: agar mijoz yetkazish/qabul qiluvchi ma'lumotlarini TO'LIQ
+    # kiritmasdan "osilib" qolsa - 10 daqiqadan keyin ogohlantirish, yana
+    # 10 daqiqadan keyin (jami 20) adminga xabar boradi.
+    asyncio.create_task(schedule_delivery_reminder(bot, order_id, user_id, order_code))
+
     # Chek vazifasi to'liq tugadi - navbatdagi ish (kitob yoki chek) ko'rsatiladi.
     await state.clear()
     await try_dispatch_next_admin_task(bot, state.storage)
+
+
+async def schedule_delivery_reminder(bot: Bot, order_id: int, user_id: int, order_code: str):
+    """To'lov qabul qilingach, agar mijoz yetkazish/qabul qiluvchi
+    ma'lumotlarini 10 daqiqada TO'LIQ kiritmasa - ogohlantirish yuboriladi.
+    Yana 10 daqiqadan keyin ham tugallanmasa - adminga xabar beriladi
+    (buyurtma AVTOMATIK bekor qilinmaydi, faqat xabardor qilinadi)."""
+    await asyncio.sleep(600)  # 10 daqiqa
+    order = db.get_order(order_id)
+    if not order or order["status"] in ("completed", "cancelled"):
+        return
+    try:
+        await bot.send_message(
+            user_id,
+            "❗ Hamma savollarga javob bering, bo'lmasa buyurtmangiz qabul qilinmaydi "
+            "va tayyorlanmaydi."
+        )
+    except Exception:
+        pass
+
+    await asyncio.sleep(600)  # yana 10 daqiqa (jami 20)
+    order = db.get_order(order_id)
+    if not order or order["status"] in ("completed", "cancelled"):
+        return
+    try:
+        user = db.get_user(user_id)
+        uname = f"@{user['username']}" if user and user.get("username") else str(user_id)
+        full_name = user["full_name"] if user and user.get("full_name") else "Noma'lum"
+        await bot.send_message(
+            config.ADMIN_ID,
+            f"⚠️ {order_code} — mijoz ({full_name}, {uname}) buyurtmani hali "
+            f"oxirigacha yetkazmadi (yetkazish/qabul qiluvchi ma'lumotlari to'liq emas). "
+            f"Buyurtma HALI QABUL QILINMAGAN holatda qolmoqda."
+        )
+    except Exception:
+        pass
 
 
 # ================= POCHTA TO'LOVINI TASDIQLASH (ikkinchi chek) =================
